@@ -1,0 +1,110 @@
+{
+  "about": "Easy Stream grant vectors. Each signer must produce `token` from `claims` and `secret` exactly.",
+  "secret": "vector-secret-not-real",
+  "cases": [
+    {
+      "name": "a host with everything",
+      "claims": {
+        "iss": "example.com",
+        "str": "launch-party",
+        "role": "host",
+        "sub": "1",
+        "name": "Андрій «host»",
+        "avatar": "https://cdn.example.com/a/1.png",
+        "chat": "write",
+        "mod": true,
+        "src": [
+          "camera",
+          "microphone",
+          "screen"
+        ],
+        "q": "1080p",
+        "org": [
+          "https://example.com"
+        ],
+        "iat": 1760000000,
+        "exp": 1760000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJleGFtcGxlLmNvbSIsImF1ZCI6ImVhc3ktc3RyZWFtIiwic3RyIjoibGF1bmNoLXBhcnR5Iiwicm9sZSI6Imhvc3QiLCJzdWIiOiIxIiwibmFtZSI6ItCQ0L3QtNGA0ZbQuSDCq2hvc3TCuyIsImF2YXRhciI6Imh0dHBzOi8vY2RuLmV4YW1wbGUuY29tL2EvMS5wbmciLCJjaGF0Ijoid3JpdGUiLCJtb2QiOnRydWUsInNyYyI6WyJjYW1lcmEiLCJtaWNyb3Bob25lIiwic2NyZWVuIl0sInEiOiIxMDgwcCIsIm9yZyI6WyJodHRwczovL2V4YW1wbGUuY29tIl0sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwNjAwfQ.wM9oVF34M8dSk2aTzR0oO-xLsF3zZuQJ8CACNu3kpK8"
+    },
+    {
+      "name": "an anonymous viewer for a whole stream",
+      "claims": {
+        "iss": "s123",
+        "str": "p42",
+        "role": "viewer",
+        "chat": "read",
+        "iat": 1760000000,
+        "exp": 1760604800
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzMTIzIiwiYXVkIjoiZWFzeS1zdHJlYW0iLCJzdHIiOiJwNDIiLCJyb2xlIjoidmlld2VyIiwiY2hhdCI6InJlYWQiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDYwNDgwMH0.YCyLmL_dFSS9LSDYDy6IChSM5Blm3MzY5Gz4kFLLVAw"
+    },
+    {
+      "name": "a signed-in viewer",
+      "claims": {
+        "iss": "example.com/blog",
+        "str": "weekly-q-a",
+        "role": "viewer",
+        "sub": "user_7",
+        "name": "Maya",
+        "iat": 1760000000,
+        "exp": 1760000300
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJleGFtcGxlLmNvbS9ibG9nIiwiYXVkIjoiZWFzeS1zdHJlYW0iLCJzdHIiOiJ3ZWVrbHktcS1hIiwicm9sZSI6InZpZXdlciIsInN1YiI6InVzZXJfNyIsIm5hbWUiOiJNYXlhIiwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwMDAzMDB9.7j0Du63hdX4NC0Xw9yknBZYlpBQSnCjCNYvGrMbPUnk"
+    },
+    {
+      "name": "a signed-in viewer of a stream that takes no guests",
+      "claims": {
+        "iss": "example.com",
+        "str": "s12",
+        "role": "viewer",
+        "sub": "7",
+        "chat": "write",
+        "stage": false,
+        "org": [
+          "https://example.com"
+        ],
+        "iat": 1760000000,
+        "exp": 1760000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJleGFtcGxlLmNvbSIsImF1ZCI6ImVhc3ktc3RyZWFtIiwic3RyIjoiczEyIiwicm9sZSI6InZpZXdlciIsInN1YiI6IjciLCJjaGF0Ijoid3JpdGUiLCJzdGFnZSI6ZmFsc2UsIm9yZyI6WyJodHRwczovL2V4YW1wbGUuY29tIl0sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDAwNjAwfQ.ir4k_V3K1OryHJ56RpqC7vA9TrNRWwYtVSVMWngx7bE"
+    },
+    {
+      "name": "a host of a stream with chat rules",
+      "claims": {
+        "iss": "s123",
+        "str": "s15",
+        "role": "host",
+        "sub": "1",
+        "chat": "write",
+        "mod": true,
+        "stage": true,
+        "offline": "closed",
+        "links": false,
+        "fresh": true,
+        "people": "all",
+        "iat": 1760000000,
+        "exp": 1760000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzMTIzIiwiYXVkIjoiZWFzeS1zdHJlYW0iLCJzdHIiOiJzMTUiLCJyb2xlIjoiaG9zdCIsInN1YiI6IjEiLCJjaGF0Ijoid3JpdGUiLCJtb2QiOnRydWUsInN0YWdlIjp0cnVlLCJvZmZsaW5lIjoiY2xvc2VkIiwibGlua3MiOmZhbHNlLCJmcmVzaCI6dHJ1ZSwicGVvcGxlIjoiYWxsIiwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwMDA2MDB9.21nP_qjtU2rGVZsk3Ps_nGkfLiGSMOVbdz5cd4Fnys4"
+    },
+    {
+      "name": "a viewer of a stream that takes no reactions",
+      "claims": {
+        "iss": "s123",
+        "str": "s16",
+        "role": "viewer",
+        "sub": "7",
+        "chat": "write",
+        "offline": "closed",
+        "reactions": false,
+        "org": [
+          "https://example.com"
+        ],
+        "iat": 1760000000,
+        "exp": 1760000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzMTIzIiwiYXVkIjoiZWFzeS1zdHJlYW0iLCJzdHIiOiJzMTYiLCJyb2xlIjoidmlld2VyIiwic3ViIjoiNyIsImNoYXQiOiJ3cml0ZSIsIm9mZmxpbmUiOiJjbG9zZWQiLCJyZWFjdGlvbnMiOmZhbHNlLCJvcmciOlsiaHR0cHM6Ly9leGFtcGxlLmNvbSJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwMDYwMH0.D_tHXnxZmhNDEXitfWEEL1O2QtdMVDM3aXMGAStRw-w"
+    }
+  ]
+}

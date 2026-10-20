@@ -1,0 +1,719 @@
+/* The API demo look, the same in every example: plain cards on a light page. */
+:root {
+    --text: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --soft: #f8fafc;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --done: #13865b;
+    --radius: 10px;
+    color-scheme: light;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--soft);
+    color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+button,
+.button {
+    display: inline-block;
+    padding: 6px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 14px;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+button:disabled {
+    border-color: var(--line);
+    background: var(--soft);
+    color: var(--muted);
+    cursor: default;
+}
+
+button.quiet,
+.button.quiet {
+    border-color: var(--line);
+    background: #fff;
+    color: var(--text);
+}
+
+.shop-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fff;
+    font-size: 14px;
+}
+
+.shop-me {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+}
+
+.shop-me a {
+    color: var(--muted);
+}
+
+.shop-main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+.shop-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    align-items: start;
+}
+
+.shop-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    min-width: 0;
+}
+
+.avatar {
+    flex: none;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px transparent;
+}
+
+/* Online now, across the shop. */
+.avatar.online {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1a9e5c;
+}
+
+.notices {
+    position: fixed;
+    inset-block-start: 16px;
+    inset-inline-end: 16px;
+    display: grid;
+    gap: 8px;
+    z-index: 10;
+}
+
+.notice {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: var(--text);
+    color: #fff;
+    font-size: 14px;
+}
+
+.card {
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.card h2,
+.sign-in h1 {
+    margin: 0 0 2px;
+    font-size: 16px;
+}
+
+.muted {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+/* The order steps */
+
+.steps {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    margin: 18px 0 4px;
+    padding: 0;
+    list-style: none;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.steps li {
+    position: relative;
+    padding-top: 22px;
+}
+
+.steps li::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    z-index: 1;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    border: 2px solid #cbd5e1;
+    border-radius: 50%;
+    background: #fff;
+}
+
+.steps li + li::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    right: 50%;
+    width: 100%;
+    height: 2px;
+    background: #cbd5e1;
+}
+
+.steps li.done,
+.steps li.now {
+    color: var(--text);
+}
+
+.steps li.done::before {
+    border-color: var(--done);
+    background: var(--done);
+}
+
+.steps li.now {
+    font-weight: 600;
+}
+
+.steps li.now::before {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.steps li.done::after,
+.steps li.now::after {
+    background: var(--done);
+}
+
+.live {
+    margin: 12px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.live::before {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-inline-end: 6px;
+    border-radius: 50%;
+    background: #cbd5e1;
+    vertical-align: 1px;
+}
+
+.live.subscribed::before {
+    background: var(--done);
+}
+
+/* Who is in the shop: <online-list> draws the list, its title and the call button of each row. */
+
+.people online-list {
+    display: block;
+    margin: -4px -6px 0;
+}
+
+/* The chat: a header with the other side, then <chat-room>, which fills the rest. */
+
+.chat {
+    display: flex;
+    flex-direction: column;
+    height: 520px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.chat-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.chat chat-room {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+}
+
+/* Signing in */
+
+.sign-in {
+    max-width: 380px;
+    margin: 64px auto;
+    padding: 24px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.sign-in form {
+    display: grid;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.sign-in button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-color: var(--line);
+    background: #fff;
+    color: var(--text);
+    text-align: start;
+}
+
+.sign-in button small {
+    margin-inline-start: auto;
+    color: var(--muted);
+}
+
+/* The order timeline, from its room history, and what the cloud carried of it. */
+
+.history {
+    margin-top: 14px;
+    font-size: 13px;
+}
+
+.history summary {
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.timeline {
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.timeline li,
+.webhooks li {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.timeline time,
+.webhooks time {
+    flex: none;
+    margin-inline-start: auto;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.switch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.wire {
+    margin-top: 8px;
+}
+
+.wire-label {
+    margin: 8px 0 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.wire pre {
+    margin: 0;
+    padding: 8px 10px;
+    overflow-x: auto;
+    border-radius: 8px;
+    background: var(--soft);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* On a demo: the code behind each card, under it. Under the chat, a card of its own. */
+
+.code {
+    margin-top: 14px;
+    font-size: 13px;
+}
+
+.code summary {
+    color: var(--accent);
+    cursor: pointer;
+}
+
+.chat + .code {
+    margin-top: 0;
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.code figure {
+    margin: 10px 0 0;
+}
+
+.code figcaption {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.code figcaption strong {
+    color: var(--text);
+}
+
+.code pre {
+    margin: 0;
+    padding: 10px 12px;
+    overflow-x: auto;
+    border-radius: 8px;
+    background: var(--soft);
+    color: var(--text);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    tab-size: 4;
+    /* A card is narrow: a long line wraps, so all of it shows, its wrapped part under its own indent and four more. */
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+.code pre .line {
+    display: block;
+    min-height: 1.5em;
+    padding-inline-start: calc(var(--indent, 0ch) + 4ch);
+    text-indent: calc(-1 * (var(--indent, 0ch) + 4ch));
+}
+
+/* Under the page code: what it takes from the page, with its values in this shop. */
+.code-notes {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.code-notes p {
+    margin: 2px 0 0;
+}
+
+.code-notes code {
+    color: var(--text);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+}
+
+/* The product, and who is looking at it. */
+
+.product {
+    display: grid;
+    gap: 12px;
+    padding: 0;
+    overflow: hidden;
+}
+
+.product img {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    object-fit: cover;
+}
+
+.product > div {
+    padding: 0 16px 16px;
+}
+
+.product > .code {
+    margin: -12px 0 0;
+    padding: 0 16px 16px;
+}
+
+/* The webhooks the server got. */
+
+.webhooks {
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 13px;
+}
+
+.webhooks code {
+    flex: none;
+    min-width: 108px;
+    color: var(--muted);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* The meeting camera check. */
+
+.preview {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    border-radius: 8px;
+    background: var(--text);
+    transform: scaleX(-1);
+}
+
+/* The live show: <live-stream> draws the player, its chat and the studio of Ann. */
+
+#show live-stream {
+    display: block;
+    margin-top: 12px;
+}
+
+/* The frame of a demo site: the stacks and links in the top bar, and "Try this". */
+
+.demo-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.demo-stack {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 13px;
+}
+
+.demo-stacks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+    font-size: 13px;
+}
+
+.demo-stacks a,
+.demo-links a {
+    color: var(--muted);
+    text-decoration: none;
+}
+
+.demo-stacks a:hover,
+.demo-links a:hover,
+.demo-stacks a[aria-current] {
+    color: var(--text);
+}
+
+.demo-stacks a[aria-current] {
+    font-weight: 600;
+}
+
+.demo-links {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+}
+
+/* Who this demo window is, and the other people of the shop to switch to. */
+.demo-people {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+}
+
+.demo-people > * {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px 2px 2px;
+    border-radius: 999px;
+}
+
+.demo-people > .shop-me {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* The shop members: each with a private call and, on a demo, a window of their own. */
+.members {
+    display: grid;
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.member {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 12px;
+    align-items: center;
+}
+
+.member-who {
+    display: grid;
+    font-size: 14px;
+}
+
+.member-actions {
+    grid-column: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.try {
+    margin-bottom: 16px;
+}
+
+.try ol {
+    display: grid;
+    gap: 6px;
+    margin: 10px 0 12px;
+    padding: 0;
+    list-style: none;
+    counter-reset: try;
+}
+
+.try li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    counter-increment: try;
+}
+
+.try li::before {
+    content: counter(try);
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.try li.done::before {
+    content: '✓';
+    border-color: var(--done);
+    background: var(--done);
+    color: #fff;
+}
+
+.try li.done > span {
+    color: var(--muted);
+}
+
+.try a {
+    color: var(--accent);
+    font-size: 14px;
+}
+
+@media (max-width: 720px) {
+    .shop-bar {
+        flex-wrap: wrap;
+    }
+
+    .demo-stacks {
+        order: 3;
+        width: 100%;
+    }
+}
+
+/* An element the page has hidden stays hidden, whatever its own display. */
+[hidden] {
+    display: none !important;
+}
+
+.timeline:empty::before {
+    content: attr(data-empty);
+    color: var(--muted);
+}
+
+/* The mobile app demo: the phone of Ben, the Capacitor app in a frame. */
+
+.phone {
+    width: 320px;
+    max-width: 100%;
+    height: 640px;
+    margin: 14px auto 0;
+    padding: 10px;
+    border-radius: 36px;
+    background: var(--text);
+}
+
+.phone iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 28px;
+    background: var(--soft);
+}
+
+.apps {
+    display: grid;
+    gap: 10px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 14px;
+}
+
+.apps a {
+    color: var(--accent);
+}
+
+/* The width of a phone: the order steps closer together. */
+@media (max-width: 380px) {
+    .shop-main {
+        padding: 10px;
+    }
+
+    .steps {
+        font-size: 11px;
+    }
+}

@@ -1,0 +1,40 @@
+# The release of wordplus-realtime: a tag vX.Y.Z, pushed by WordPlus's publish script with the release's files, is
+# tested, built and published to PyPI through its trusted publishing (no token: PyPI trusts this repository's
+# release.yml in the environment `release`), then made the GitHub release with the wheel and the sdist.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: The tag is the package's version
+        run: test "v$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)" = "$GITHUB_REF_NAME"
+
+      - name: Tests
+        run: |
+          uv venv
+          uv pip install -e '.[test]'
+          .venv/bin/python -m pytest -q
+
+      - run: uv build
+
+      - name: PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: The GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "wordplus-realtime ${GITHUB_REF_NAME#v}"

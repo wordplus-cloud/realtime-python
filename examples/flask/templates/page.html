@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API demo</title>
+    <link rel="stylesheet" href="/static/shop.css">
+    {# The user realtime settings, keys and identity included, and the import map of the client: shop.js imports
+       @wordplus/realtime as it is. The shop data: tojson escapes it for a <script>. #}
+    {{ wordplus_realtime() }}
+    <script type="application/json" id="shop">{{ shop|tojson }}</script>
+    <script type="module" src="/static/shop.js"></script>
+</head>
+<body>
+    <header class="shop-bar">
+        <strong>API demo</strong>
+        <form class="shop-me" method="post" action="/logout">
+            <img class="avatar" src="{{ me.avatar }}" alt="" width="24" height="24"> {{ me.name }}
+            <button class="quiet" type="submit">Sign out</button>
+        </form>
+    </header>
+    <main class="shop-main" id="shop-root"></main>
+</body>
+</html>

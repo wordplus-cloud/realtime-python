@@ -1,0 +1,2 @@
+flask>=3.0
+wordplus-realtime>=1.0
