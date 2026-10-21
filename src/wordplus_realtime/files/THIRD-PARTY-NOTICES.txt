@@ -1,4 +1,4 @@
-Third-party software in the scripts of @wordplus/realtime-client 1.0.16
+Third-party software in the scripts of @wordplus/realtime-client 1.0.31
 
 - @noble/ciphers 2.4.0 (MIT): in realtime.min.js
 - @socket.io/component-emitter 3.1.2 (MIT): in realtime-worker.js, realtime.min.js

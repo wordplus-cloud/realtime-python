@@ -1,4 +1,4 @@
-Third-party software in realtime-ui.min.js and realtime-ui-streams.min.js, @wordplus/realtime-ui 1.0.1
+Third-party software in realtime-ui.min.js and realtime-ui-streams.min.js, @wordplus/realtime-ui 1.0.2
 
 - compare-versions 6.1.1 (MIT)
 - domelementtype 2.3.0 (BSD-2-Clause)

@@ -1,6 +1,6 @@
 # wordplus-realtime
 
-WordPlus Cloud's realtime SDK for Python, outside WordPress: your server's part of rooms, presence, who is online, calls and group calls, sealed end to end. It declares your rooms and who may join, call and see what, signs it for the browser, and sends your events to rooms and to users. The browser part is the npm package [`@wordplus/realtime`](https://docs.wordplus.cloud/apps/browser/), with Better Messages' chat, list of who is online and call screen as ready-made parts.
+WordPlus Cloud's realtime SDK for Python, outside WordPress: your server's part of rooms, presence, who is online, calls and group calls, sealed end to end. It declares your rooms and who may join, call and see what, signs it for the browser, and sends your events to rooms and to users. The browser part is the npm package [`@wordplus/realtime`](https://docs.wordplus.cloud/apps/browser/), with the chat, the list of who is online and the call screen of Better Messages as ready-made parts.
 
 **Docs:** a whole guide each for [Django](https://docs.wordplus.cloud/django/getting-started/), [FastAPI](https://docs.wordplus.cloud/fastapi/getting-started/) and [Flask](https://docs.wordplus.cloud/flask/getting-started/) (in this package: [docs/django](docs/django/getting-started.md), [docs/fastapi](docs/fastapi/getting-started.md), [docs/flask](docs/flask/getting-started.md)), and the [Python reference](docs/reference.md).
 

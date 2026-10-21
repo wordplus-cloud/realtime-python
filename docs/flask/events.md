@@ -71,6 +71,7 @@ def chat_messages(a, b):
 ```
 
 - **Check there anything that matters:** the events do not go through your server before they are sent on.
+- **On localhost** no webhook reaches your server, as a webhook needs an address on the internet. While you build there, the ready-made chat tells your server of each message it sent with its `sent` event, for a route of yours to keep by the same id ([without a webhook](https://docs.wordplus.cloud/use-cases/chat/#without-a-webhook-as-on-localhost)). Or a tunnel gives your computer an address ([while you develop](https://docs.wordplus.cloud/apps/sending/#while-you-develop)).
 - **`at`** is in milliseconds, and `reactions` maps each reaction to who chose it. A reaction comes as `{ id, key }`: the one reaction of the user to message `id`, an empty `key` taking it back.
 - **A gap:** a page back after the 5 minutes a room keeps its events, or after more came than it keeps, gets what the room still had, then `error` on the room with `{ code: 'gap' }`, still joined. Some events are lost to it, so ask your route for the newest page again: `chat.on( 'error', ( e ) => e.code === 'gap' && reload() )`.
 

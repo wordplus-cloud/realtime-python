@@ -60,6 +60,26 @@ await rt.callScreen();   // the ring and the call window, on this page
 
 ![Ann has answered: each browser shows the other person camera, their own in a corner, and the call controls. The cameras are illustrations](https://docs.wordplus.cloud/img/apps/calls-connected.webp)
 
+## The call in the page
+
+The call screen opens a call in a window in the corner, over the page. To show it in the page itself, above a chat or in place of a picture, put a `<call-spot>` where it goes, naming the calls it takes:
+
+```html
+<call-spot call="support:{a}:{b}" style="height: 480px"></call-spot>
+```
+
+A call shows there as it starts, or as soon as a page with the spot opens. On another page it goes on in the window in the corner, its camera, microphone and time as they were, and comes back when the page with the spot opens again. With no call, the spot takes no place, or shows what you put inside it ([`<call-spot>`](https://docs.wordplus.cloud/apps/elements/#call-spot)).
+
+## The call in its chat
+
+A conversation between two can hold its own call instead: the other person on the chat's top bar with a video and an audio call button, and their call in the chat itself while it is on, beside the messages. Give the chat the other person, with their name and picture as your page has them, and `call`, the call named as the room, which your calls rule for `chat:{a}:{b}` decides:
+
+```html
+<chat-room room="chat:34:42" to="42" name="Ben" avatar="/photos/42.jpg" call style="height: 560px"></chat-room>
+```
+
+Narrower than 600px, the call takes the whole chat, and Show Chat in its controls puts the messages under it. `start-call="video"` calls them once as the chat opens, for a Video button elsewhere that links to the chat ([`<chat-room>`](https://docs.wordplus.cloud/apps/elements/#chat-room)).
+
 ## Adding people
 
 Once a call is up, either side may ring someone else in, and it goes on as a group call. Say whom the call screen offers:
@@ -109,6 +129,7 @@ call.remove(43)                           # out now, their tokens from before re
 call.end()                                # out, everyone
 ```
 
+- **They block:** run them with `run_in_threadpool` in an async route, as `await run_in_threadpool(call.get)`.
 - **A host's buttons** are on the call screen already, for whom the rule answers `admin`: mute, let speak or make a listener, and remove. Buttons of your own call a route of yours that checks who asks, then these. A rule that answers `{"publish": False}` makes a listener, whom `permit()` lets speak while the call runs.
 - **`get()`** with nobody in the call answers `people` 0, `started_at` None and an empty list. `started_at` is when this call began: one named again after everyone left begins again.
 
