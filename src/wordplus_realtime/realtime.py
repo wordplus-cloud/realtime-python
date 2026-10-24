@@ -51,7 +51,7 @@ def files_manifest() -> Dict[str, Any]:
             _manifest = json.load(f)
     return _manifest
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 SERVER = "https://ws.wordplus.cloud"
 API_SERVER = "https://rest.wordplus.cloud"

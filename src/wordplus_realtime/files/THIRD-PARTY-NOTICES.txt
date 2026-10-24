@@ -1,4 +1,4 @@
-Third-party software in the scripts of @wordplus/realtime-client 1.0.31
+Third-party software in the scripts of @wordplus/realtime-client 1.0.46
 
 - @noble/ciphers 2.4.0 (MIT): in realtime.min.js
 - @socket.io/component-emitter 3.1.2 (MIT): in realtime-worker.js, realtime.min.js
@@ -6,7 +6,7 @@ Third-party software in the scripts of @wordplus/realtime-client 1.0.31
 - engine.io-parser 5.2.3 (MIT): in realtime-worker.js, realtime.min.js
 - socket.io-client 4.8.4 (MIT): in realtime-worker.js, realtime.min.js
 - socket.io-parser 4.2.4 (MIT): in realtime-worker.js, realtime.min.js
-- @wordplus/rtc-client 1.0.13 (Apache-2.0), a modified livekit-client 2.22.2, and what it bundles: realtime-rooms.min.js, realtime-rooms-e2ee.worker.js
+- @wordplus/rtc-client 1.0.21 (Apache-2.0), a modified livekit-client 2.23.0, and what it bundles: realtime-rooms.min.js, realtime-rooms-e2ee.worker.js
 
 ================================================================================
 @noble/ciphers 2.4.0 (MIT)
@@ -170,7 +170,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-@wordplus/rtc-client 1.0.13 (Apache-2.0): NOTICE
+@wordplus/rtc-client 1.0.21 (Apache-2.0): NOTICE
 ================================================================================
 
 Copyright 2021 LiveKit, Inc.
@@ -197,7 +197,7 @@ free place, and a leave that says whether the client will join again. The
 files it changed are listed in the patch it is built with.
 
 ================================================================================
-@wordplus/rtc-client 1.0.13 (Apache-2.0): LICENSE
+@wordplus/rtc-client 1.0.21 (Apache-2.0): LICENSE
 ================================================================================
 
 Apache License
@@ -376,19 +376,19 @@ Apache License
       of your accepting any such warranty or additional liability.
 
 ================================================================================
-@wordplus/rtc-client 1.0.13: what it bundles
+@wordplus/rtc-client 1.0.21: what it bundles
 ================================================================================
 
-Third-party notices for @wordplus/rtc-client 1.0.13
+Third-party notices for @wordplus/rtc-client 1.0.21
 ====================================================================================================
 
 WordPlus RTC client is a modified version of an Apache-2.0 client SDK: its notice, and what we changed, are in NOTICE,
 its licence in LICENSE. Its bundles also carry the packages below, each with its licence. The list is made from the
 bundler's own module lists at build time:
 
-  rtc-client: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/mutex@1.1.1, @livekit/protocol@1.50.4, events@3.3.0, jose@6.2.3, loglevel@1.9.2, machina@7.0.1, sdp-transform@2.15.0, sdp@3.2.2, webrtc-adapter@9.0.6
-  rtc-client.e2ee.worker: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/mutex@1.1.1, @livekit/protocol@1.50.4, events@3.3.0, loglevel@1.9.2
-  rtc-client.fm.worker: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/protocol@1.50.4, events@3.3.0, loglevel@1.9.2
+  rtc-client: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/mutex@1.1.1, @livekit/protocol@1.52.1, events@3.3.0, jose@6.2.12, loglevel@1.9.2, machina@7.0.1, sdp-transform@2.15.0, sdp@3.2.2, webrtc-adapter@9.0.6
+  rtc-client.e2ee.worker: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/mutex@1.1.1, @livekit/protocol@1.52.1, events@3.3.0, loglevel@1.9.2
+  rtc-client.fm.worker: @babel/helpers@7.29.7, @bufbuild/protobuf@1.10.1, @livekit/protocol@1.52.1, events@3.3.0, loglevel@1.9.2
 
 ----------------------------------------------------------------------------------------------------
 @babel/helpers 7.29.7
@@ -646,7 +646,7 @@ Apache License
       of your accepting any such warranty or additional liability.
 
 ----------------------------------------------------------------------------------------------------
-@livekit/protocol 1.50.4
+@livekit/protocol 1.52.1
 License: Apache-2.0
 Source: https://github.com/livekit/protocol
 In: rtc-client, rtc-client.e2ee.worker, rtc-client.fm.worker
@@ -885,7 +885,7 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------------------------------------------------
-jose 6.2.3
+jose 6.2.12
 License: MIT
 Source: https://github.com/panva/jose
 In: rtc-client
