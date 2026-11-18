@@ -38,10 +38,10 @@ LABEL = r"[a-z][a-z0-9]{0,15}:[A-Za-z0-9_\-=@,.;:]{1,240}"
 RESERVED = ("d", "u", "ch")
 MAX_LABELS = 100
 
-_LABEL = re.compile("^" + LABEL + "$")
-_SEALED = re.compile("^(" + LABEL + "):" + FORMAT + r"\.([A-Za-z0-9_-]+)$")
+_LABEL = re.compile("^" + LABEL + r"\Z")
+_SEALED = re.compile("^(" + LABEL + "):" + FORMAT + r"\.([A-Za-z0-9_-]+)\Z")
 # The characters of an id a label carries as they are: those of room names, but `=`, which escapes the others.
-_LABEL_SAFE = re.compile(r"^[A-Za-z0-9_\-@,.;:]$")
+_LABEL_SAFE = re.compile(r"^[A-Za-z0-9_\-@,.;:]\Z")
 
 UserId = Union[int, str]
 
@@ -200,10 +200,16 @@ class Keys:
 
     def profile(self, user: UserId, plain: Dict[str, Any], seal: bool = True) -> Dict[str, Any]:
         """A user's entry in the directory: ``pd``, the profile with every text sealed with the day's key however deep,
-        and ``pdh``, an HMAC of the plain profile under a key derived from the local key."""
+        and ``pdh``, an HMAC of the plain profile under a key derived from the local key.
+
+        Where the profile is sealed, the hash's last 8 digits are the day, as WordPress has the day in its hash
+        (wordplus/realtime 64ca239). So a page of a new day sends a new hash, the server takes its fresh entry, and the
+        entry it keeps stays within the day keys a page holds. Its first 56 digits say the profile alone, which
+        @wordplus/realtime's RealtimeProvider reads, so a new day doesn't connect a page again."""
         full = dict(plain)
         full["user_id"] = user
-        label = self.day_label()
+        day = day_of()
+        label = self.day_label(day)
         pd: Dict[str, Any] = {}
         for field, value in full.items():
             # The id stays as it is, a number or a string: the server keys the entry by it.
@@ -213,7 +219,8 @@ class Keys:
             kept = self._sealed_value(value, label, seal, 0)
             if kept is not None or value is None:
                 pd[field] = kept
-        return {"pd": pd, "pdh": hmac.new(self.key("profile-hash"), dumps(full).encode("utf-8"), hashlib.sha256).hexdigest()}
+        digest = hmac.new(self.key("profile-hash"), dumps(full).encode("utf-8"), hashlib.sha256).hexdigest()
+        return {"pd": pd, "pdh": digest[:56] + format(day, "08x") if seal else digest}
 
     def _sealed_value(self, value: Any, label: str, seal: bool, depth: int) -> Any:
         if isinstance(value, str):

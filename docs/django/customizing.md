@@ -9,11 +9,15 @@ The elements draw in a shadow root, and their colours are custom properties your
 ```css
 /* static/shop.css */
 call-screen, chat-room, online-list {
-    --bm-color-accent: 37, 99, 235;      /* red, green, blue */
-    --bm-messenger-font: Inter, system-ui, sans-serif;
-    --bm-radius-card: 14px;
+    --wplus-color-accent: 37, 99, 235;      /* red, green, blue */
+    --wplus-messenger-font: Inter, system-ui, sans-serif;
+    --wplus-radius-card: 14px;
 }
 ```
+
+- **Light and dark** follow the system. `wplus-messages-light` or `wplus-messages-dark` on `<body>` keeps one, as does a `color-scheme` on the page that names one alone.
+- **Words:** the screens come in English, German, Spanish, French, Italian, Dutch, Polish, Croatian and Hebrew, in the language of the page (`<html lang>`), or the one `screen: { lang }` names in `connect()`. `rt.callScreen( { strings: { 'End Call': 'Hang up' } } )` changes any of them by its English text.
+- **Right to left:** in Hebrew they draw mirrored, by the language they show.
 
 ## 2. A piece of your own
 
@@ -57,7 +61,7 @@ node wordplus-ui.build.mjs          # static/realtime-ui.js, with your copy
 
 ```js
 // order.js
-const rt = await connect( { ...JSON.parse( document.getElementById( 'realtime' ).textContent ), ui: '/static/realtime-ui.js' } );
+const rt = await connect( { ...window.wordplusRealtimeConfig, ui: '/static/realtime-ui.js' } );   // yours in place of ours
 ```
 
 The view is yours now: `components/wordplus/chat/`, and what runs the conversation stays in the package. Build again after each change, before `collectstatic`. Check it with its tests (`npx vitest run components/wordplus`) and every state in the preview (`npx @wordplus/realtime-ui preview`). When ours changes, `npx @wordplus/realtime-ui diff` shows what to merge.
@@ -65,6 +69,14 @@ The view is yours now: `components/wordplus/chat/`, and what runs the conversati
 ## 4. Your own interface
 
 The elements are the ready-made option, never a must. Draw who is online, the chat, the calls and the live stream with your own components, on the same API they are built on: your rules, encryption and connection stay the same. [Your own interface](https://docs.wordplus.cloud/apps/interface/) shows the API under each element.
+
+## Live streams
+
+`<live-stream>` and `<stream-studio>` are the player, chat and studio of Easy Stream, with a look of their own: custom properties on `.estream-theme`, such as `--estream-accent`, `--estream-radius` and `--estream-font`, and their words in the same nine languages, by `rt.streamScreen( { lang, strings } )` ([live streams](https://docs.wordplus.cloud/apps/customizing/#live-streams)).
+
+```css
+body .estream-theme { --estream-accent: #16a34a; --estream-radius: 12px; }
+```
 
 ## With your AI coding agent
 

@@ -26,7 +26,9 @@ from wordplus_realtime import Realtime
 realtime = Realtime.from_environment(profile=lambda user: {"name": name_of(user)})
 realtime.room("order:{id}", lambda user, p: owns_order(user, p["id"]), history=20)
 realtime.room("chat:{a}:{b}", lambda user, p: str(user) in (p["a"], p["b"]), history=50, emit=["message", "typing"])
-realtime.calls("support:{a}:{b}", lambda user, other, p: may_support(user, other))
+
+# Who may call whom is your app's own logic: in a route of yours, after your own check, for the page's rt.startCall( token ).
+token = realtime.call_token(me, to)
 
 realtime.to("order:42").emit("updated", {"status": "paid"})
 realtime.to_user(42).emit("notice", {"text": "Your order shipped"})

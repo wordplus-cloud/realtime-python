@@ -13,9 +13,17 @@ What your app sends through WordPlus Cloud is sealed on the way: the realtime se
 | Events your server sends a user (`to_user`) | the key of the user | the pages of that user |
 | What the people in a call see of each other | the day key | everyone your app knows |
 | Your users in the directory | the day key | everyone your app knows |
-| The media of a call | a key for that call | its people |
+| The media of a call between two people, and of a group call encrypted end to end | a key for that call | its people |
 
 A room declared `public=True` is not sealed, and neither is one with `seal=False`. The realtime servers see room names, event names, user ids, which key a value needs, and sealed values. They never hold a key.
+
+## Calls and live streams
+
+- **A call between two people** is encrypted end to end on every path: direct between the two, through our relays, or through our media servers.
+- **A group call** is encrypted end to end when it comes from a call, as someone is added, or when its rule says `encrypt=True` ([permissions](https://docs.wordplus.cloud/apps/permissions/#group-calls)).
+- **A live stream** is not encrypted end to end: its picture and its chat are for everyone watching, so they are encrypted on the way, and the media servers see them.
+
+An encrypted call is encrypted in the browser, with a key your server makes from its local key and gives only to the people in the call: our relays and media servers carry what they cannot read.
 
 ## Your local key
 
@@ -23,19 +31,22 @@ A room declared `public=True` is not sealed, and neither is one with `seal=False
 
 ## When someone loses access
 
-Move a key on, and what comes next is sealed from them. The key generations live somewhere every server sees: a cache that does not evict, such as Redis or the database cache, but not the local memory one.
+Move a key on, and what comes next is sealed from them. The key generations live somewhere every server sees: a cache that does not evict, such as Redis or the database cache, but not the local memory one. Your settings give the store:
 
 ```python
-from django.core.cache import caches
-
+# settings.py
 class CacheGenerations:
+    """The key generations in the default cache, which every server of the app shares."""
+
     def get(self, name):
-        return caches["default"].get("wordplus-realtime:" + name)
+        from django.core.cache import cache
+        return cache.get("wordplus-realtime:" + name)
 
     def set(self, name, generation):
-        caches["default"].set("wordplus-realtime:" + name, generation, timeout=None)
+        from django.core.cache import cache
+        cache.set("wordplus-realtime:" + name, generation, timeout=None)
 
-realtime = Realtime.from_environment(profile=wr.user_profile, generations=CacheGenerations())
+WORDPLUS_REALTIME = {"generations": CacheGenerations()}
 ```
 
 ```python
@@ -46,16 +57,24 @@ realtime.rotate_user(user.pk)             # their own key moves on
 
 Those still let in get the new key from your server with the next event, and keep the old ones for the history before it.
 
+## Signing out
+
+A single-page app calls `rt.close()` when its user signs out, before another user signs in on the same page: it closes the connection and forgets the keys of the page.
+
 ## Your users
 
-A directory of your users, each profile sealed with the day key, that every page of your app reads. `wr.user_profile` shows the full name of a user, or their username. For more, such as an avatar, write your own:
+A directory of your users, each profile sealed with the day key, that every page of your app reads. By default a user profile is their full name, or their username, from your user model. For more, such as an avatar, write your own, and name it in your settings by its dotted path:
 
 ```python
-def profile(user_id):
+# shop/people.py
+def profile_of(user_id):
     user = User.objects.filter(pk=user_id).select_related("profile").first()
-    return {"name": user.get_full_name(), "avatar": user.profile.avatar_url, "url": f"/people/{user.pk}/"} if user else None
+    if user is None:
+        return None
+    return {"name": user.get_full_name(), "avatar": user.profile.avatar_url, "url": f"/people/{user.pk}/"}
 
-realtime = Realtime.from_environment(profile=profile)
+# settings.py
+WORDPLUS_REALTIME = {"profile": "shop.people.profile_of"}
 ```
 
 ```js
@@ -67,8 +86,22 @@ const users = await rt.users( [ 34, 42 ] );   // { 34: { user_id: 34, name: 'Ann
 
 ## Your own sealed values
 
+A kind of key of your own is named after what it seals: `note:12` for note 12. A page that lacks the key asks your keys route, and a rule answers: a function your server declares once for the kind `note`, given the rest of the name, `12`. This rule says:
+
+1. **Visitors** who are not signed in get no key.
+2. **Those who may read the note** get its key, and nobody else.
+
 ```python
-realtime.kind("note", lambda rest, user, label: user is not None and Note.objects.filter(pk=rest, readers=user).exists())
+def may_have_note(rest, user):
+    # 1. Visitors get no key.
+    if user is None:
+        return False
+
+    # 2. Those who may read note 12, and nobody else.
+    return Note.objects.filter(pk=rest, readers=user).exists()
+
+realtime.kind("note", may_have_note)
+
 sealed = realtime.keys.seal_json(note_data, f"note:{note.pk}")   # send it any way you like
 ```
 

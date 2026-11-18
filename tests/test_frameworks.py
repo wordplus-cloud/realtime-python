@@ -343,7 +343,7 @@ def test_django_runs_its_commands_before_the_keys_are_set(monkeypatch):
             made = wr.get_realtime()
             made.room("order:{id}", lambda user, p: True)
             call_command("check", verbosity=0)
-            with pytest.raises(ValueError, match="site and secret are required"):
+            with pytest.raises(ValueError, match="WORDPLUS_SITE and WORDPLUS_SECRET"):
                 made.config(42)
     finally:
         wr._current, wr._from_settings = kept, None

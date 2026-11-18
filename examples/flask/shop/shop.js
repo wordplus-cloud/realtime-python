@@ -4,14 +4,16 @@
 //   <script type="application/json" id="realtime">  the server config() for the signed-in user (in Laravel
 //                                                    @wordplusRealtime writes window.wordplusRealtimeConfig instead)
 //   <script type="application/json" id="shop">      who is signed in, the people, the order, the product, the chat with its
-//                                                    two people, and the server routes, rooms and event names
+//                                                    two people, and the server routes, rooms and event names. Its routes
+//                                                    callToken, meetingToken and showToken are those that start a call,
+//                                                    the meeting and the show: the server's own check, then a token
 //
 // What it shows: the order of Ben moving on (a room the server emits to, with a notice to Ben himself), its timeline from
 // the room history, and what the cloud carried of it, sealed. The product with a live count of who is looking (a
 // public room), the chat of Ann and Ben (the Better Messages conversation on a room, <chat-room>: messages emitted from the
 // browser with an ack, which the server keeps from its webhook and the chat pages through, typing and read ticks as
 // volatile events, reactions. The name and picture of the other side from the directory), the shop members, a private call
-// to each (<call-button>), who is in the shop (a presence room, <online-list>, with a call button for each, and who
+// to each (<call-button>, with a token from the server's call route), who is in the shop (a presence room, <online-list>, with a call button for each, and who
 // is online across the shop), the webhooks the server got. The live show of the new mugs (a live stream,
 // <live-stream>). And the daily meeting (a group call), with the call screen. The elements come from
 // @wordplus/realtime-ui, which rt.callScreen() and rt.streamScreen() load.
@@ -272,16 +274,16 @@ function chatCard() {
     return h('section', { class: 'chat', id: 'chat' }, head, chat);
 }
 
-// Everyone in the shop now (<online-list>: the presence room members, with a call button for each of the others).
-// Stepping out takes the list away, which leaves the room.
+// Everyone in the shop now (<online-list>: the presence room members, with a call button for each of the others, which
+// asks the server's call route for its token). Stepping out takes the list away, which leaves the room.
 function presenceCard() {
     const place = h('div', { class: 'people' });
     const toggle = h('button', { class: 'quiet' }, 'Step out');
     // #region demo: presence
-    // Who is in the shop now, with a video call button on the row of each of the others.
+    // Who is in the shop now, with a video call button on the row of each of the others: your route says who may call.
     const enter = () => place.replaceChildren(html`
         <online-list room="${shop.rooms.shop}" title="In the shop now"
-            call="support:{pair}" type="video"></online-list>`);
+            token-url="${shop.routes.callToken}" type="video"></online-list>`);
     // #endregion
 
     toggle.addEventListener('click', () => {
@@ -343,20 +345,23 @@ function webhooksCard() {
     return h('section', { class: 'card', id: 'webhooks' }, h('h2', {}, 'Webhooks your server got'), phone, empty, list);
 }
 
-// The shop live show (a live stream, the server `streams()` rule): Ann presents the new mugs with her camera, and
-// everyone else watches, signed in or not, and writes in its chat. The player, the chat and the studio where Ann goes
-// live are <live-stream>, which rt.streamScreen() loads. Only where the server names a show room.
+// The shop live show (a live stream, with a token from the server's show route, which makes Ann its host): Ann presents
+// the new mugs with her camera, and everyone else watches and writes in its chat. The player, the chat and the studio
+// where Ann goes live are <live-stream>, which rt.streamScreen() loads. Only where the server names a show room.
 function showCard() {
     if (!shop.rooms.show) return null;
     // #region demo: show
     // The player and its chat for everyone, and for its host the studio to go live from: rt.streamScreen() loads them.
+    // Your route says who is who, asked again as each token runs out.
     rt.streamScreen();
-    const stream = html`<live-stream name="${shop.rooms.show}" title="The new mugs"></live-stream>`;
+    const stream = html`<live-stream name="${shop.rooms.show}" token-url="${shop.routes.showToken}"
+        title="The new mugs"></live-stream>`;
     // #endregion
     return h('section', { class: 'card', id: 'show' }, h('h2', {}, 'Live show'), stream);
 }
 
-// The daily meeting: a group call everyone in the shop may join, and a look at your camera before you do.
+// The daily meeting: a group call everyone in the shop may join, with a token from the server's meeting route, and a
+// look at your camera before you do.
 function meetingCard() {
     const preview = h('video', { class: 'preview', muted: true, playsinline: true, autoplay: true, hidden: true });
     let stream = null;
@@ -375,7 +380,8 @@ function meetingCard() {
         check.textContent = 'Stop the preview';
     } }, 'Check your camera');
     // #region demo: meeting
-    const join = html`<room-button room="${shop.rooms.meeting}" type="video" title="Daily meeting">Join the meeting</room-button>`;
+    const join = html`<group-call-button call="${shop.rooms.meeting}" token-url="${shop.routes.meetingToken}"
+        type="video" title="Daily meeting">Join the meeting</group-call-button>`;
     // #endregion
     // Joining ends the look at the camera, which the call takes.
     join.addEventListener('click', () => stream && check.click());
@@ -401,19 +407,20 @@ function demoBar() {
             h('a', { href: demo.guide }, 'Guide'),
             h('a', { href: demo.source }, 'Source'),
             // Who this window is, and the other people of the shop a click away: the window becomes theirs, as their link
-            // does in a window of its own.
+            // does in a window of its own. Search engines follow none of these links (nofollow), as each new shop has new ones.
             h('nav', { class: 'demo-people', 'aria-label': 'Who you are in this window' },
                 ...shop.people.map((p) => {
                     const face = h('img', { class: 'avatar', src: p.avatar, alt: '', width: 24, height: 24, 'data-user': p.id });
                     if (String(p.id) === String(me.id)) return h('span', { class: 'shop-me', 'aria-current': 'true' }, face, p.name);
                     const open = demo.open.find((o) => String(o.id) === String(p.id));
-                    return open ? h('a', { href: open.url, title: `Be ${p.name} in this window` }, face, p.name) : null;
+                    return open ? h('a', { href: open.url, rel: 'nofollow', title: `Be ${p.name} in this window` }, face, p.name) : null;
                 }))),
     );
 }
 
-// The shop members, everyone in it whether online or not: a private call to any of the others, named as the list of
-// who is in the shop names it (support:{pair}), on a demo, their own window too, where the call rings for them.
+// The shop members, everyone in it whether online or not: a private call to any of the others, with a token from the
+// server's call route as the list of who is in the shop has it, on a demo, their own window too, where the call rings
+// for them.
 function membersCard() {
     const row = (p) => {
         const mine = String(p.id) === String(me.id);
@@ -423,13 +430,13 @@ function membersCard() {
             h('div', { class: 'member-who' }, h('strong', {}, mine ? `${p.name} (you)` : p.name), h('span', { class: 'muted' }, p.role)),
             mine ? null : h('div', { class: 'member-actions' },
                 // #region demo: members
-                // A private call to this member, by video or by voice, named by the two of them (support:{pair}).
-                html`<call-button to="${p.id}" call="support:{pair}" type="video"
+                // A private call to this member, by video or by voice: your route says who may call whom.
+                html`<call-button to="${p.id}" token-url="${shop.routes.callToken}" type="video"
                     name="${p.name}" avatar="${p.avatar}">Video call</call-button>`,
-                html`<call-button to="${p.id}" call="support:{pair}" type="audio"
+                html`<call-button to="${p.id}" token-url="${shop.routes.callToken}" type="audio"
                     name="${p.name}" avatar="${p.avatar}">Voice call</call-button>`,
                 // #endregion
-                open ? h('a', { class: 'button quiet', href: open.url, target: '_blank', rel: 'opener' }, `Open as ${p.name}`) : null),
+                open ? h('a', { class: 'button quiet', href: open.url, target: '_blank', rel: 'opener nofollow' }, `Open as ${p.name}`) : null),
         );
     };
     return h('section', { class: 'card', id: 'members' },
@@ -467,7 +474,7 @@ function tryThis() {
     const ann = named(34), ben = named(42), cara = named(43);
     const link = (who) => {
         const found = demo.open.find((o) => o.id === who.id);
-        return found ? h('a', { href: found.url, target: '_blank', rel: 'opener' }, `Open as ${who.name}`) : null;
+        return found ? h('a', { href: found.url, target: '_blank', rel: 'opener nofollow' }, `Open as ${who.name}`) : null;
     };
     const line = (name, text, action) => (lines[name] = h('li', { class: ticks[name] ? 'done' : '' }, h('span', {}, text), action));
 

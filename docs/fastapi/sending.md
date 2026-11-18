@@ -11,7 +11,7 @@ await realtime.to(["order:1042", "staff"]).aemit("updated", {"status": "shipped"
 
 - **`aemit()`** runs the request on a worker thread, so the event loop goes on. `emit()` is the same, blocking, for a sync route or a task.
 - **The answer** is the kept event ids, by room, for the rooms that keep history.
-- **A refusal** raises `RealtimeError`, whose `code` says why: `too_large`, `too_many`, `reserved` (event names kept for the room itself), `bad_room` ([errors](https://docs.wordplus.cloud/apps/errors/)).
+- **A refusal** raises `RealtimeError`, whose `code` says why: `too_large`, `too_many`, `reserved` (one of the [reserved names](https://docs.wordplus.cloud/apps/errors/#reserved-names)), `bad_room` ([errors](https://docs.wordplus.cloud/apps/errors/)).
 - **Up to 1 MB** an event, to up to 1,000 rooms at once.
 
 ## Not back to the tab that made it
@@ -54,6 +54,8 @@ It is sealed with the key of the user, so only their pages read it. A user with 
 ## Many at once
 
 ```python
+from starlette.concurrency import run_in_threadpool
+
 await run_in_threadpool(realtime.batch, [
     {"rooms": "order:1042", "event": "updated", "data": {"status": "shipped"}},
     {"users": 42, "event": "notice", "data": {"text": "Your order shipped"}},
@@ -65,39 +67,63 @@ Up to 100 events a call.
 ## Asking about a room
 
 ```python
-realtime.in_room("shop").count()
-realtime.in_room("shop").members()                     # of a presence room, their info opened
-realtime.in_room("chat:34:42").history(limit=50)
-realtime.in_room("chat:34:42").forget(event_id)        # one kept event, forget() for all
-realtime.in_room("chat:34:42").kick(43)                # out now, and back only if your rule lets them in again
+shop = realtime.in_room("shop")
+chat = realtime.in_room("chat:34:42")
+
+await run_in_threadpool(shop.count)
+await run_in_threadpool(shop.members)                  # of a presence room, their info opened
+await run_in_threadpool(chat.history, limit=50)
+await run_in_threadpool(chat.forget, event_id)         # one kept event, forget() for all
+await run_in_threadpool(chat.kick, 43)                 # out now, and back only if your rule lets them in again
 ```
 
-They block: run them with `run_in_threadpool` in an async route. `kick()` also moves a sealed room key on, so what is sent after it is not theirs to read, when your server keeps the key generations ([encryption](encryption.md#when-someone-loses-access)).
+They block, so an async route runs them with `run_in_threadpool`. `kick()` also moves a sealed room key on, so what is sent after it is not theirs to read, when your server keeps the key generations ([encryption](encryption.md#when-someone-loses-access)).
 
 ## A user
 
 ```python
-realtime.user(42).disconnect()                                   # out of everything at once
-replies = realtime.user(42).ask("cart", {"why": "checkout"})     # their pages reply with rt.answer( "cart", fn )
+await run_in_threadpool(realtime.user(42).disconnect)                 # out of everything at once
+replies = await realtime.user(42).aask("cart", {"why": "checkout"})   # [{"data", "at"}]: their pages reply with rt.answer( "cart", fn )
 ```
 
-`disconnect()` takes the user out of every room, call and live stream on every connection, when you sign them out or block them. Their pages ask your routes again, so your rules decide whether they come back. They block: run them with `run_in_threadpool` in an async route. The rooms in use, what your app uses, the log of your webhook, and group calls and live streams from your server: [sending in depth](https://docs.wordplus.cloud/apps/sending/#a-user), [calls](https://docs.wordplus.cloud/apps/calls/#from-your-server), [live streams](https://docs.wordplus.cloud/apps/streams/#from-your-server).
+`disconnect()` takes the user out of every room, call and live stream on every connection, when you sign them out or block them. Their pages ask your routes again, so your rules decide whether they come back. It blocks, so an async route runs it with `run_in_threadpool`. `aask()` is `ask()` on a worker thread, as `aemit()` is `emit()`: it waits for the first reply, and gives `[]` when no page answers. The rooms in use, what your app uses, the log of your webhook, and group calls and live streams from your server: [sending in depth](https://docs.wordplus.cloud/apps/sending/#a-user), [calls](https://docs.wordplus.cloud/apps/calls/#from-your-server), [live streams](https://docs.wordplus.cloud/apps/streams/#from-your-server).
 
 ## Webhooks
 
-Your server can hear what happens in rooms. Set the address on your app page in your WordPlus Cloud account (on your computer, through a tunnel: [while you develop](https://docs.wordplus.cloud/apps/sending/#while-you-develop)), `https://shop.example.com/api/realtime/webhook`, which `wr.router()` already answers:
+Your server can hear what happens in rooms. Set the address on your app page in your WordPlus Cloud account (on your computer, through a tunnel: [while you develop](https://docs.wordplus.cloud/apps/sending/#while-you-develop)), `https://shop.example.com/api/realtime/webhook`, which `wr.router()` already answers. The rule of a room names the events of its pages that come here too (`webhook`), and `realtime.on()` gives each event, by its name, a handler of yours. Here:
+
+1. **The chat of two**, such as `chat:34:42`, sends its messages here too.
+2. **Each message** is kept once, by its `event_id`, from signed-in people alone.
+3. **A user going offline** is marked away.
 
 ```python
-# The rule of a room says which events of the pages come here too
+# 1. The chat of two sends its messages here too. is_one_of is its rule, as in rooms.
 realtime.room("chat:{a}:{b}", is_one_of, history=50, emit=["message", "typing"], webhook=["message"])
 
-# A guest in a public room sends with no "from": kept here from signed-in people alone.
-realtime.on("message", lambda e: "from" in e and save_message(e["event_id"], e["room"], e["from"], e["data"]["text"], e["at"]))   # a repeat has the same id
+# 2. Each message, kept once by its event_id: a repeat has the same one.
+def keep_message(e):
+    # A guest in a public room sends with no "from": kept from signed-in people alone.
+    if "from" not in e:
+        return
+    save_message(e["event_id"], e["room"], e["from"], e["data"]["text"], e["at"])
+
+realtime.on("message", keep_message)
+
+# 3. A user going offline.
 realtime.on("user.offline", lambda e: mark_away(e["user"]))
 ```
 
 - **What comes:** the page events a rule names in `webhook`, by their name. `room.occupied` and `room.vacated`. `member.joined` and `member.left`. `user.online` and `user.offline`. `stream.live` and `stream.ended`, a live stream going live and ending, with its name in `stream`. `call.ended`, `group.joined`, `group.left`, `stream.joined` and `stream.left`, what people used, with how long once it is over, to charge them by ([charging for calls and streams](https://docs.wordplus.cloud/use-cases/charging/)). `"*"` gets them all.
 - **Checked and opened:** each request is signed, and checked before your handler sees it. Sealed data comes opened. The handlers run on a worker thread.
 - **At least once:** each event has its id, so a repeat can be dropped. A request that fails is tried again for 24 hours.
+
+## Use cases
+
+Each with the rules of your server and the code of the page:
+
+- [Live updates and notifications](https://docs.wordplus.cloud/use-cases/live-updates/): an order moving on, and a notice to one user in every tab
+- [Every page and app of a user](https://docs.wordplus.cloud/use-cases/devices/): `ask()` and `rt.answer()`, and taking a user out of everything at once
+- [Charging for calls and streams](https://docs.wordplus.cloud/use-cases/charging/): what each person used, from the webhook
+- [Members-only streams](https://docs.wordplus.cloud/use-cases/members-only/): telling the members by `to_user()` when a stream goes live
 
 More, with Node and PHP side by side: [sending in depth](https://docs.wordplus.cloud/apps/sending/).

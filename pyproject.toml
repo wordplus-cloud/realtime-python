@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wordplus-realtime"
-version = "1.0.2"
+version = "1.1.0"
 description = "WordPlus Cloud's realtime SDK for Python outside WordPress: rooms with presence and history, online status, events to rooms and users, webhooks, calls between two people that ring in the browser, group calls, sealed end to end. Signs what the browser package (@wordplus/realtime) asks for and emits. Django, FastAPI and Flask included, and the browser files served from its own routes."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,6 +23,9 @@ classifiers = [
     "Topic :: Communications",
 ]
 dependencies = ["pynacl>=1.5"]
+
+[project.scripts]
+wordplus-realtime = "wordplus_realtime.__main__:main"
 
 [project.urls]
 Homepage = "https://docs.wordplus.cloud/django/getting-started/"

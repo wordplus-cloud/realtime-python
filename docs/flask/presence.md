@@ -6,11 +6,22 @@ Three ways to show people: a presence room lists who is in it to everyone in it 
 
 ## A presence room
 
+One room for the whole shop, named `shop`, lists who is in it to everyone in it. A page that joins it asks your server first, and a rule answers: a function your server declares once for the room. WordPlus Cloud then holds the page to the answer ([permissions](https://docs.wordplus.cloud/apps/permissions/)). This rule says:
+
+1. **Signed-in users** join, and visitors do not.
+2. **Each one is shown** to the others with their name and their role.
+
 ```python
-# Who is in the shop: everyone signed in, with their name and role.
 def in_the_shop(user):
-    person = find_person(user) if user is not None else None
-    return {"info": {"name": person.name, "role": person.role}} if person else False
+    # 1. Signed-in users only.
+    if user is None:
+        return False
+    person = find_person(user)
+    if person is None:
+        return False
+
+    # 2. What the others see of them.
+    return {"info": {"name": person.name, "role": person.role}}
 
 realtime.room("shop", in_the_shop, presence=True)
 ```
@@ -31,7 +42,7 @@ A user is a member once, however many tabs and devices they have in the room, an
 
 ## Counting
 
-`count=True` gives a room a live count, without a list:
+`count=True` gives a room a live count, without a list. The page of product 7 joins `product:7`, a public room: anyone may join it, signed in or not, and no rule runs.
 
 ```python
 realtime.room("product:{id}", public=True, count=True)
@@ -56,7 +67,7 @@ rt.online.on( 'count', ( n ) => showOnline( n ) );
 ```
 
 - **A page watches** up to 1,000 users, and gets their status now and every change.
-- **Your server asks too:** `realtime.online().has(42)`, `.count()`, `.list()`.
+- **Your server asks too:** `realtime.online.has(42)`, `.count()`, `.list()`.
 - **Hiding:** a user who chose not to show their status is never online to anyone:
 
 ```python
@@ -85,5 +96,12 @@ await rt.callScreen();   // loads the elements and the call screen, rt.ui() the 
 - **Only those the user may call** get a button: the list asks your calls route once for all its members, which runs your `calls()` rule for each as for the caller. Nothing to add on your server.
 - **Names and pictures** come from the member info, then from your [directory](encryption.md#your-users).
 - **Its look** is that of Better Messages, in a shadow root: your styles do not reach in, and its colours are CSS custom properties your page sets.
+
+## Use cases
+
+Each with the rules of your server and the code of the page:
+
+- [Who is online and who is here](https://docs.wordplus.cloud/use-cases/online/): a dot on every avatar, the people in a room, and a live count
+- [Editing together](https://docs.wordplus.cloud/use-cases/collaboration/): who is in a document, their cursors and their changes
 
 More, with Node and PHP side by side: [presence in depth](https://docs.wordplus.cloud/apps/presence/).

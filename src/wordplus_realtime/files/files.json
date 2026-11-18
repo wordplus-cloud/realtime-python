@@ -1,11 +1,13 @@
 {
-  "version": "a81273988014",
+  "version": "aa736ab1bab4",
   "files": {
-    "realtime.js": "ff4bf9781a936a15ec682d926c7699c4cc29ddfa847877cc6ec6626e51915176",
-    "realtime-worker.js": "e2a4910b6b7aa6ff3f951806fb12c958ddab64437d0685cae4770d0d9d69df26",
-    "realtime-rooms.min.js": "7d338c433ad2c1e11caf54c1bf82c9cfd0b2f10ccc912cd37303c3971fb98e9b",
-    "realtime-rooms-e2ee.worker.js": "dd542a3fa88a164b3f518e782b5c48a677255f92d5410a5ea637b04911665972",
-    "realtime-ui.min.js": "52516b0a0ebe7cd4e1762cdd8035de583420f6a1616e4a605ca2526ecff1d29a",
-    "realtime-ui-streams.min.js": "73489452cce1f8fb605d4944dafc1035c65ed8edb377d704062289a7fbe5cb5a"
+    "realtime.js": "0125caf4ad60fdc795a8183c9061c85e05719cfc6af1d408776d76128a092305",
+    "realtime-worker.js": "095b6e491ef13f5b60b599c9fe47a241d6f0a7c2a55dd6621935b4ccbbd8c104",
+    "realtime-rooms.min.js": "b57c077bb92301cd8ae6dd46451d6cbce71b592d7c17ac7312d78ef20b5703f1",
+    "realtime-rooms-e2ee.worker.js": "24dda308cb70075485f6c8f5aa91e8d7f6a255a6d4ee176c000e9135fc6937bb",
+    "realtime-ui.min.js": "e58e3adc2d83f867e7b59d351f4ee43ebd0edc5e453a7fdb7e3b05352edea066",
+    "realtime-ui-streams.min.js": "b61d39e239ce0279f32a1dc86666232dfec2dcfb2fe3589346fd67d224b1b837",
+    "realtime-ui-recording.min.js": "6d30f518952fe9dc5a67ff39eedf5dc8cdfcbe47b84b5d1cf21a501eafb8e116",
+    "hls.light.min.js": "0251332c00a216a35d7d6919044d60da82b78beb3bd50ac6c662ae74a2f5474b"
   }
 }

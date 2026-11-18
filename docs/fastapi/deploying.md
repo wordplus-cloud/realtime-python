@@ -19,21 +19,40 @@ Add every address your pages are served from to the app in WordPlus Cloud: schem
 
 `realtime.js`, `realtime-worker.js`, `realtime-rooms.min.js`, `realtime-rooms-e2ee.worker.js`, `realtime-ui.min.js` and `realtime-ui-streams.min.js` come with the package, and its router serves them at `/api/realtime/files/{version}/{name}`, from the address of your pages, where a browser runs a worker. Each release serves the ones its package came with, nothing is copied, and each answer is kept for a year as immutable, so a CDN in front of your app keeps them too.
 
-## Workers
-
-The router runs the rules on a worker thread, and `aemit()` its request on one too, so neither holds up the event loop. Any number of Uvicorn workers answer the routes: they share nothing but your database and, for moving keys on, the generation store.
-
 ## Another address
 
-A page or app served from another address than your API, such as a single-page app on its own domain or one in Capacitor, connects with `endpoint: 'https://api.example.com/api/realtime'`, and your server answers that address with CORS:
+A page served from another address than your routes, such as a single-page app at `https://app.shop.example.com` asking an API at `https://api.shop.example.com`, or one in Capacitor, names your routes in full and sends its user in a header, as a browser sends no cookie to another address:
+
+```js
+const rt = await connect( { app: 's1500000007', endpoint: 'https://api.shop.example.com/api/realtime', headers: { Authorization: 'Bearer ' + token } } );
+```
+
+- **In WordPlus Cloud,** add the page address to the app, as every other ([its addresses](#its-addresses)).
+- **The user** comes from that header, the function you give `router()`, as the rest of your API finds it.
+- **CORS comes from FastAPI, not this package,** so a page never gets the header twice, which a browser refuses. For the page address alone:
+  - the address back exactly in `Access-Control-Allow-Origin`, with `Vary: Origin`
+  - `POST` for the routes and `GET` for the files, as a group call fetches its encryption worker from there, and the `OPTIONS` asked before them
+  - `Content-Type` and the headers the page sends (`Authorization` above)
+  - no `Access-Control-Allow-Credentials`, as the page sends no cookie
+- **The worker** at another address is one a browser never starts, so each tab of that page connects by itself.
 
 ```python
 from fastapi.middleware.cors import CORSMiddleware
 
-app.add_middleware(CORSMiddleware, allow_origins=["https://app.example.com"], allow_credentials=True, allow_methods=["POST"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["https://app.shop.example.com"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"], max_age=600)
 ```
 
-Add that address to the app in WordPlus Cloud too.
+## Behind a proxy
+
+Run Uvicorn with `--proxy-headers`, and name your proxy in `--forwarded-allow-ips`, so the session cookie and redirects see HTTPS as the browser does:
+
+```bash
+uvicorn app:app --proxy-headers --forwarded-allow-ips 10.0.0.1
+```
+
+## Several servers
+
+The router runs the rules on a worker thread, and `aemit()` and `aask()` their requests on one too, so none holds up the event loop. Any number of Uvicorn workers, on any number of servers, answer the routes: they share nothing but your database. Only moving keys on keeps a little state, the key generations, in a store they share ([encryption](encryption.md#when-someone-loses-access)).
 
 ## Content Security Policy
 

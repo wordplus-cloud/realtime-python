@@ -16,4 +16,8 @@ urlpatterns = [
     path("orders/<int:pk>/status", views.order_status),
     path("orders/<int:pk>/wire", views.order_wire),
     path("chat/messages", views.chat_messages),
+    # The tokens that start a call, the daily meeting and the live show: each the app's own check, then a token.
+    path("api/call-token", views.call_token),
+    path("api/meeting-token", views.meeting_token),
+    path("api/show-token", views.show_token),
 ]

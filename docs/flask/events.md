@@ -6,18 +6,33 @@ Pages send events to the rooms they are in, straight through WordPlus Cloud, wit
 
 ## What a room allows
 
+The chat of Ann and Ben is named after them, `chat:34:42`, the smaller id first. A page that joins it asks your server first, and a rule answers: a function your server declares once for every room whose name fits `chat:{a}:{b}`. WordPlus Cloud then holds the page to the answer, and to the events the room lets it send ([permissions](https://docs.wordplus.cloud/apps/permissions/)). This rule says:
+
+1. **The pages send** messages, typing, reactions and read ticks to it, and nothing else.
+2. **Your server gets** the messages and reactions too, by webhook, to keep the conversation, and the room keeps its last 50 events for a page that reconnects.
+3. **The two people** in the name join, and nobody else.
+
 ```python
-# The chat of Ann and Ben: they send messages, typing, reactions and read ticks. The messages and reactions reach this
-# server by webhook, which keeps the conversation.
-realtime.room("chat:{a}:{b}", lambda user, p: str(user) in (p["a"], p["b"]),
-              history=50, emit=["message", "typing", "reaction", "read"], webhook=["message", "reaction"])
+def may_join_chat(user, p):
+    # 3. The two people in the name, and nobody else.
+    return str(user) in (p["a"], p["b"])
+
+realtime.room(
+    "chat:{a}:{b}",
+    may_join_chat,
+    # 1. What the pages may send to it.
+    emit=["message", "typing", "reaction", "read"],
+    # 2. What your server gets too, and the last 50 kept for a page that reconnects.
+    webhook=["message", "reaction"],
+    history=50,
+)
 ```
 
 - **`emit`** lists the names, or `"*"` for any. None by default: a room your server alone sends to.
 - **`webhook`** names those your server gets too, to keep them ([below](#keeping-the-conversation)).
 - **`history`** keeps the last events of the room for 5 minutes: what a page that reconnects missed comes again from it.
 - **The answer for one user** can narrow it: `{"emit": ["typing"]}`, or `{"readOnly": True}`.
-- **Reserved:** `joined`, `join`, `leave`, `count` and `error` are the names kept for the room itself.
+- **Reserved:** `joined`, `join`, `leave`, `count`, `error`, `kicked`, `connect`, `disconnect`, `connect_error`, `state` and `online` belong to the room and the connection, and are never allowed ([reserved names](https://docs.wordplus.cloud/apps/errors/#reserved-names)).
 
 ## Sending
 
@@ -55,25 +70,40 @@ chat.on( 'typing', ( data, meta ) => showTyping( meta.from, data.on ) );   // an
 
 ## Keeping the conversation
 
-The conversation is for your app to keep, in its own database, as Better Messages keeps its own in the WordPress database. A room keeps its events for 5 minutes, for pages that reconnect. Your server gets the events the rule names in `webhook` ([webhooks](sending.md#webhooks)) and saves them by `event_id`, the id the pages saw as `meta.id`. A route gives them back, a page at a time:
+The conversation is for your app to keep, in its own database, as Better Messages keeps its own in the WordPress database. A room keeps its events for 5 minutes, for pages that reconnect. Your server gets the events the rule names in `webhook` ([webhooks](sending.md#webhooks)) and saves them by `event_id`, the id the pages saw as `meta.id`. A route of yours gives them back, a page at a time: `/chat/34/42/messages` for the chat `chat:34:42`. Here:
+
+1. **Each message** is kept once, by its `event_id`, from signed-in people alone.
+2. **The route** gives the newest 50, or with `?before=<id>` the 50 before that one, oldest first.
+3. **Only the two people** of the chat may read it, as `init_app()` finds the user of the request.
 
 ```python
-# A guest in a public room sends with no "from": kept here from signed-in people alone.
-realtime.on("message", lambda e: "from" in e and save_message(e["event_id"], e["room"], e["from"], e["data"]["text"], e["at"]))
+from wordplus_realtime.flask import session_user
+
+# 1. Each message, kept once by its event_id: a repeat has the same one.
+def keep_message(e):
+    # A guest in a public room sends with no "from": kept from signed-in people alone.
+    if "from" not in e:
+        return
+    save_message(e["event_id"], e["room"], e["from"], e["data"]["text"], e["at"])
+
+realtime.on("message", keep_message)
 
 
+# 2. The newest 50, or with ?before=<id> the 50 before that one, oldest first.
 @app.get("/chat/<a>/<b>/messages")
 def chat_messages(a, b):
-    """The newest 50, or with ?before=<id> the 50 before that one, oldest first. Only its two people may read it."""
-    if str(session.get("user")) not in (a, b):
+    # 3. Only the two people of the chat: Flask-Login current_user, else session["user_id"].
+    if str(session_user()) not in (a, b):
         return jsonify(error="not_in_chat"), 403
+
     return jsonify(messages_page(f"chat:{a}:{b}", request.args.get("before"), 50))   # {"messages": [{id, from, text, at, reactions}], "more"}
 ```
 
 - **Check there anything that matters:** the events do not go through your server before they are sent on.
-- **On localhost** no webhook reaches your server, as a webhook needs an address on the internet. While you build there, the ready-made chat tells your server of each message it sent with its `sent` event, for a route of yours to keep by the same id ([without a webhook](https://docs.wordplus.cloud/use-cases/chat/#without-a-webhook-as-on-localhost)). Or a tunnel gives your computer an address ([while you develop](https://docs.wordplus.cloud/apps/sending/#while-you-develop)).
+- **On localhost** no webhook reaches your server, as a webhook needs an address on the internet. While you build there, the ready-made conversation window (`<chat-room>`) tells your server of each message it sent with its `sent` event, for a route of yours to keep by the same id ([without a webhook](https://docs.wordplus.cloud/use-cases/chat/#without-a-webhook-as-on-localhost)). Or a tunnel gives your computer an address ([while you develop](https://docs.wordplus.cloud/apps/sending/#while-you-develop)).
 - **`at`** is in milliseconds, and `reactions` maps each reaction to who chose it. A reaction comes as `{ id, key }`: the one reaction of the user to message `id`, an empty `key` taking it back.
 - **A gap:** a page back after the 5 minutes a room keeps its events, or after more came than it keeps, gets what the room still had, then `error` on the room with `{ code: 'gap' }`, still joined. Some events are lost to it, so ask your route for the newest page again: `chat.on( 'error', ( e ) => e.code === 'gap' && reload() )`.
+- **Unread counts and pushes** are your server's too: a last-read marker for each member, which the page tells a route of yours, as read marks go volatile and never reach the webhook, and a push to Firebase or APNs for a member `online` says is offline ([what your server keeps for a chat](https://docs.wordplus.cloud/use-cases/chat-server/)).
 
 ## Ready-made: the chat
 
@@ -96,5 +126,12 @@ await rt.callScreen();   // loads the elements and the call screen, rt.ui() the 
 - **It fills** the height its place gives it. Its look is that of Better Messages, in a shadow root. Its colours are CSS custom properties your page sets.
 
 `<typing-line room="…">` is the typing line alone, for a page that draws its own messages.
+
+## Use cases
+
+Each with the rules of your server and the code of the page:
+
+- [Chat](https://docs.wordplus.cloud/use-cases/chat/): conversations of two and of a group, kept by your server
+- [Editing together](https://docs.wordplus.cloud/use-cases/collaboration/): cursors as volatile events, and changes kept for a page that reconnects
 
 More, with Node and PHP side by side: [events in depth](https://docs.wordplus.cloud/apps/events/).

@@ -15,7 +15,7 @@ Your framework can run websockets of its own. [Why WordPlus Cloud](https://docs.
 
 ## 1. Your app in WordPlus Cloud
 
-**Apps are in early access.** Ask for it on our [contact form](https://www.wordplus.cloud/contact), and we turn **Apps** on in your WordPlus Cloud account. Until then your account has no Apps page.
+**Apps come with a subscription.** [Choose your connections](https://www.wordplus.cloud/pricing#apps), starting from 1,000, and your WordPlus Cloud account gets its **Apps** page.
 
 In your WordPlus Cloud account, go to **Apps → Add app**. Name it, and list the addresses its pages are served from: `https://shop.example.com`, and `http://localhost:8000` while you develop. Only pages on those addresses may connect.
 
@@ -29,6 +29,8 @@ WORDPLUS_LOCAL_KEY=…        # openssl rand -hex 32; the same on every server o
 
 Python reads no `.env` by itself: set them in the environment of the server process, or start it with `uvicorn app:app --env-file .env`.
 
+Once the package is installed, its command writes these for you, with a local key it makes, and says whether your keys and routes work: `wordplus-realtime init`, then `wordplus-realtime check http://localhost:8000`.
+
 ## 2. Install
 
 ```bash
@@ -38,6 +40,13 @@ pip install 'wordplus-realtime[fastapi]'    # uv add works the same
 That is all, with no Node: the package carries the browser files, and its router serves them. The client as an ES module, the worker that lets the tabs of a user share one connection, the room client for group calls, and `realtime-ui.min.js` and `realtime-ui-streams.min.js`, the ready-made parts, the second for live streams. Each release serves the ones its package came with, from a folder named after their version.
 
 ## 3. Your server
+
+Each room is named after what it carries: `order:1042` for the updates of order 1042. A page that joins it asks your server first, and a rule answers: a function your server declares once for every room whose name fits the pattern `order:{id}`. WordPlus Cloud then holds the page to the answer ([permissions](https://docs.wordplus.cloud/apps/permissions/)). This rule says:
+
+1. **Visitors** who are not signed in stay out.
+2. **The customer of the order** joins, and nobody else. `owner_of` is yours, from your data.
+
+And the room keeps its last 20 updates, for a page that reconnects.
 
 ```python
 # app.py
@@ -52,8 +61,16 @@ realtime = Realtime.from_environment(       # WORDPLUS_SITE, WORDPLUS_SECRET, WO
     profile=lambda user: {"name": name_of(user), "avatar": avatar_of(user)},
 )
 
-# The room of an order: its customer may join, and the last 20 updates are kept.
-realtime.room("order:{id}", lambda user, p: user is not None and owner_of(p["id"]) == user, history=20)
+# The room of an order, order:1042, the last 20 updates kept.
+def may_follow_order(user, p):
+    # 1. Visitors stay out.
+    if user is None:
+        return False
+
+    # 2. The customer of the order, and nobody else.
+    return owner_of(p["id"]) == user
+
+realtime.room("order:{id}", may_follow_order, history=20)
 
 async def current_user(request: Request):
     """The user id of the request, or None: your sign-in, here a session."""
@@ -65,7 +82,7 @@ app.include_router(wr.router(realtime, current_user), prefix="/api/realtime")   
 app.mount("/static", StaticFiles(directory="static"), name="static")
 ```
 
-- **`current_user(request)`** gives the request user id, or `None`. It may be `async`: a token, a session, a dependency of your own.
+- **`current_user(request)`** gives the request user id, or `None`. It may be `async`: a token, a session, a dependency of your own. Read it from something your server checks, never from a name or an id the page sends: whoever sends one reads that person's rooms and calls as them.
 - **The pattern of a room** names its parts: `order:{id}` matches `order:1042`, and the rule gets `{"id": "1042"}`.
 - **The rules** (`room()`, `calls()`, `kind()`, `profile`) are plain functions. The router runs them on a worker thread, so a blocking database query in one does not hold up the event loop.
 - **The routes take JSON POSTs,** and GETs for the browser files alone. A page on another site cannot send JSON without asking first, and it is never allowed to, so a session cookie needs no CSRF token here.
@@ -118,9 +135,13 @@ Everyone in the room gets `{ status }`, sealed with the room key on the way, and
 
 ## Next
 
-- [Rooms](rooms.md), [presence and who is online](presence.md), [sending from your server](sending.md) and [events from the page](events.md), with the ready-made chat
-- [Calls and group calls](calls.md), with the call screen
+- [Rooms](rooms.md), [presence and who is online](presence.md), [sending from your server](sending.md) and [events from the page](events.md), with the ready-made conversation window (`<chat-room>`)
+- [Calls and group calls](calls.md), with the call screen, and [live streams](streams.md)
 - [Encryption and your users](encryption.md)
 - [Customizing the screens](customizing.md): their look, a piece of your own, or their whole code
 - [Deploying](deploying.md), and [the example app](example.md)
 - The [Python reference](../reference.md), the [browser reference](https://docs.wordplus.cloud/apps/browser/), [errors](https://docs.wordplus.cloud/apps/errors/) and [limits](https://docs.wordplus.cloud/apps/limits/)
+
+## What to build next
+
+Each use case is a page of its own, with the rules of your server and the code of the page: [chat](https://docs.wordplus.cloud/use-cases/chat/), [who is online](https://docs.wordplus.cloud/use-cases/online/), [live updates and notifications](https://docs.wordplus.cloud/use-cases/live-updates/), [calls from a button](https://docs.wordplus.cloud/use-cases/support-calls/), [team meetings](https://docs.wordplus.cloud/use-cases/meetings/), [live streaming](https://docs.wordplus.cloud/use-cases/live-streaming/) and the rest in the [use cases](https://docs.wordplus.cloud/use-cases/overview/). Three of them build a small Node.js app from an empty folder, every file in full.

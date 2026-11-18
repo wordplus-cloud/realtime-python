@@ -12,16 +12,18 @@ Django: ``wordplus_realtime.django``. FastAPI and Starlette: ``wordplus_realtime
 
 from .keys import GenerationStore, Keys, day_of, label_of, valid_label
 from .patterns import Patterns, valid_pattern, valid_room
-from .realtime import API_SERVER, SERVER, VERSION, CallQueries, Emitter, OnlineQueries, Realtime, RealtimeError, RoomQueries, StreamQueries, UserQueries, WebhookQueries
+from .realtime import API_SERVER, SERVER, VERSION, CallQueries, Emitter, EveryoneEmitter, OnlineQueries, Realtime, RealtimeError, RecordingQueries, RoomQueries, StreamQueries, UserQueries, WebhookQueries
 
 __all__ = [
     "Realtime",
     "RealtimeError",
     "Emitter",
+    "EveryoneEmitter",
     "RoomQueries",
     "OnlineQueries",
     "UserQueries",
     "WebhookQueries",
+    "RecordingQueries",
     "CallQueries",
     "StreamQueries",
     "Keys",

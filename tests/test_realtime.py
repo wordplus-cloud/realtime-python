@@ -1,6 +1,7 @@
 """The package against the conformance vectors (spec/vectors.json, @wordplus/realtime's scripts/vectors.php), and as
 the browser uses its routes: what @wordplus/realtime's server part answers, case for case with its test/server.test.ts."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -12,7 +13,7 @@ import warnings
 
 import pytest
 
-from wordplus_realtime import Keys, Patterns, Realtime, RealtimeError, day_of
+from wordplus_realtime import Keys, Patterns, Realtime, RealtimeError, day_of, valid_label, valid_pattern, valid_room
 from wordplus_realtime.keys import base64url
 from wordplus_realtime.realtime import FILES_DIR, MAX_HISTORY_DAYS
 
@@ -114,6 +115,21 @@ def test_patterns_match_a_rooms_parts_the_rule_with_most_of_its_own_characters_d
         p.add("bad pattern", "x")
 
 
+def test_a_name_with_a_newline_at_its_end_is_refused_as_node_refuses_it():
+    # Python's $ also matches before a newline at the end, so these went to the rule, as Node's `bad_room` shows they mustn't.
+    realtime = app()
+    asked = []
+    realtime.room("order:{id}", lambda user, p: asked.append(p["id"]) or True)
+    realtime.streams("show:{id}", lambda user, p: "viewer")
+
+    assert not valid_room("order:42\n")
+    assert not valid_pattern("order:{id}\n")
+    assert not valid_label("d:1\n")
+    assert realtime.authorize(["order:42\n"], 42)["denied"] == {"order:42\n": "bad_room"}
+    assert asked == []
+    assert realtime.authorize_call({"stream": "show:1\n"}, 42) == {"denied": "bad_request"}
+
+
 def test_the_auth_route_signs_one_token_for_the_rooms_allowed_with_their_options_and_keys():
     realtime = app()
     realtime.room("order:{id}", lambda user, p: user == 42 and p["id"] == "42", history=20)
@@ -142,6 +158,15 @@ def test_the_auth_route_signs_one_token_for_the_rooms_allowed_with_their_options
     # The sealed rooms' keys come with the token; a public room is not sealed.
     assert grant["keys"] == [keys.entry("ch:order:42:1"), keys.entry("ch:chat:34:42:1"), keys.entry("ch:board:1:1")]
     assert json.dumps(realtime.authorize([], 7)) == '{"denied": {}}'
+
+
+def test_a_rooms_history_takes_any_number_rounded_down_as_node_does():
+    realtime = app()
+    realtime.room("a:{id}", lambda user: True, history=20.9)
+    realtime.room("b:{id}", lambda user: True, history=20.0)
+
+    c = claims(realtime.authorize(["a:1", "b:1"], 42)["token"], "wordplus-realtime channels v1")
+    assert [c["r"]["a:1"]["h"][0], c["r"]["b:1"]["h"][0]] == [20, 20]
 
 
 def test_a_rooms_history_keeps_a_part_of_a_day_and_the_cloud_limit_when_days_is_missing_or_not_above_0():
@@ -178,6 +203,281 @@ def test_nobody_gets_presence_a_public_room_needs_no_rule_and_info_stays_plain_w
     assert plain["info"] == {"name": "User 7", "avatar": "https://example.com/7.png"}
     assert "infos" not in plain
     assert "keys" not in realtime.authorize(["lobby"], 7)
+
+
+def test_patterns_take_pair_as_the_two_people_a_name_holds_weighing_what_a_b_weighs():
+    p = Patterns()
+    p.add("chat:{pair}", "pair")
+    p.add("chat:{a}:{b}", "parts")
+    p.add("chat:{id}", "one")
+
+    assert p.match("chat:34:42") == {"pattern": "chat:{pair}", "value": "pair", "params": {"pair": "34:42"}}
+    assert p.match("chat:7")["value"] == "one"
+    assert p.match("chat:34:42:56") is None
+    with pytest.raises(ValueError, match="one pair"):
+        p.add("x:{pair}:{pair}", "x")
+
+
+def test_a_room_of_pair_lets_in_the_two_people_its_name_holds_with_no_rule_and_nobody_else():
+    realtime = app()
+    assert realtime.room("chat:{pair}", history=50, emit=["message"]) is realtime
+
+    assert realtime.may_join("chat:34:42", 34) is True
+    assert realtime.may_join("chat:34:42", "42") is True
+    assert realtime.may_join("chat:34:42", 7) is False
+    assert realtime.may_join("chat:34:42", None) is False
+    assert realtime.may_join("chat:42:42", 42) is False
+
+    grant = realtime.authorize(["chat:34:42"], 42)
+    assert claims(grant["token"], "wordplus-realtime channels v1")["r"]["chat:34:42"]["e"] == ["message"]
+
+    assert realtime.room("dm:{pair}") is realtime
+    assert realtime.may_join("dm:user_2abc:user_9xyz", "user_9xyz") is True
+
+
+def test_a_room_of_pair_asks_the_apps_rule_only_about_the_two_told_who_the_other_is():
+    asked = []
+
+    def rule(user, params, room):
+        asked.append((user, params, room))
+        return params["other"] != "34"
+
+    realtime = app().room("chat:{pair}", rule)
+
+    assert realtime.may_join("chat:34:42", 7) is False
+    assert asked == []
+
+    assert realtime.may_join("chat:34:42", 42) is False
+    assert asked == [(42, {"pair": "34:42", "other": "34"}, "chat:34:42")]
+    assert realtime.may_join("chat:34:42", 34) is True
+
+    # A rule of fewer arguments still works, as every rule does here.
+    assert app().room("dm:{pair}", lambda user: user == 34).may_join("dm:34:42", 34) is True
+
+
+def made_call(token):
+    """What a call token holds."""
+    return json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+
+
+def test_a_call_token_signs_the_call_keeping_from_the_realtime_server_what_is_the_pages_alone():
+    realtime = app()
+    made = made_call(realtime.call_token(42, 34))
+    signed = claims(made["token"], "wordplus-realtime calls v1")
+
+    assert signed["aud"] == "wordplus-realtime call"
+    assert signed["call"] == "call:" + made["id"]
+    assert (signed["id"], signed["sub"], signed["role"], signed["type"], signed["to"]) == (made["id"], 42, "caller", "video", 34)
+    assert made["pair"] == [42, 34]
+    assert made["key"] == realtime.call_key(made["id"], 42, 34)
+
+    seen = json.dumps(signed)
+    for secret in (made["key"], made["media_key"], made["member"], "_ring", "User 42"):
+        assert secret not in seen
+
+
+def test_a_call_token_takes_a_type_a_name_and_what_the_person_called_is_told():
+    made = made_call(app(seal=False).call_token("user_2abc", 34, type="audio", name="support:17", info={"name": "Ann"}))
+    signed = claims(made["token"], "wordplus-realtime calls v1")
+
+    assert (signed["call"], signed["sub"], signed["type"], signed["info"]["name"]) == ("support:17", "user_2abc", "audio", "Ann")
+    assert isinstance(signed["info"]["_ring"], str)
+
+
+def test_the_person_rung_answers_a_call_token_with_its_proof_and_no_rule_and_nobody_else_does():
+    realtime = app(seal=False)
+    made = made_call(realtime.call_token(42, 34))
+    ring = claims(made["token"], "wordplus-realtime calls v1")["info"]["_ring"]
+    answering = {"call": made["call"], "id": made["id"], "role": "callee", "type": "video"}
+
+    answer = realtime.authorize_call({**answering, "from": 42, "ring": ring}, 34)
+    signed = claims(answer["token"], "wordplus-realtime calls v1")
+    assert (signed["sub"], signed["role"]) == (34, "callee")
+    assert (answer["key"], answer["media_key"], answer["pair"]) == (made["key"], made["media_key"], [42, 34])
+
+    assert realtime.authorize_call({**answering, "from": 42, "ring": "A" * 43}, 34) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**answering, "from": 42, "ring": ring}, 56) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**answering, "from": 56, "ring": ring}, 34) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**answering, "from": 42}, 34) == {"denied": "forbidden"}
+
+
+def test_a_call_token_is_the_only_way_to_start_a_call_with_no_rule_and_its_proof_renews_it_for_its_holder_alone():
+    realtime = app()
+    assert realtime.authorize_call({"call": "call:anything", "id": "abcDEF123_-xyz", "role": "caller", "to": 56, "type": "video"}, 42) == {"denied": "forbidden"}
+
+    made = made_call(realtime.call_token(42, 34))
+    renewing = {"call": made["call"], "id": made["id"], "role": "caller", "to": 34, "type": "video", "member": made["member"]}
+
+    assert realtime.authorize_call(renewing, 42)["media_key"] == made["media_key"]
+    assert realtime.authorize_call(renewing, 56) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**renewing, "to": 56}, 42) == {"denied": "forbidden"}
+
+    # Being in a call brings nobody new into it.
+    adding = {"call": made["call"], "id": "anotherAttempt1", "role": "caller", "to": 56, "type": "video", "group": made["id"], "pair": made["pair"], "member": made["member"]}
+    assert realtime.authorize_call(adding, 42) == {"denied": "forbidden"}
+
+
+def test_a_call_token_refuses_what_cant_be_a_call():
+    realtime = app()
+    for user, to, options in ((42, 42, {}), (42, "has a space", {}), (42, 34, {"name": "has a space"})):
+        with pytest.raises(ValueError, match="wordplus-realtime"):
+            realtime.call_token(user, to, **options)
+
+
+def call_ref(made, member=None):
+    return base64url(json.dumps({"id": made["id"], "name": made["call"], "type": made["type"], "pair": made["pair"], "member": member or made["member"]}).encode())
+
+
+def test_a_call_token_with_into_rings_someone_into_a_call_of_this_user_and_they_answer_with_its_proof():
+    realtime = app()
+    first = made_call(realtime.call_token(42, 34, type="audio"))
+    made = made_call(realtime.call_token(42, 56, into=call_ref(first)))
+    signed = claims(made["token"], "wordplus-realtime calls v1")
+
+    assert (signed["call"], signed["sub"], signed["role"], signed["to"], signed["type"], signed["group"]) == (first["call"], 42, "caller", 56, "audio", first["id"])
+    assert made["pair"] == [42, 34]
+    assert made["id"] != first["id"]
+
+    answer = realtime.authorize_call({"call": first["call"], "id": made["id"], "role": "callee", "from": 42, "type": "audio", "group": first["id"], "pair": [42, 34], "ring": made["ring"]}, 56)
+    assert claims(answer["token"], "wordplus-realtime calls v1")["sub"] == 56
+    assert answer["media_key"] == first["media_key"]
+
+
+def test_a_call_token_with_into_refuses_someone_not_in_the_call():
+    realtime = app()
+    first = made_call(realtime.call_token(42, 34))
+    for user, into in ((77, call_ref(first)), (42, call_ref(first, "A" * 43)), (42, "nothing")):
+        with pytest.raises(ValueError, match="a call this user is in"):
+            realtime.call_token(user, 56, into=into)
+
+
+def test_a_group_call_token_signs_a_place_in_the_call_as_asked_with_no_rule():
+    realtime = app()
+    made = made_call(realtime.group_call_token(42, "class:7", type="audio", publish=False, hidden=True))
+    signed = claims(made["token"], "wordplus-realtime calls v1")
+
+    assert (signed["aud"], signed["room"], signed["sub"], signed["type"], signed["publish"], signed["subscribe"], signed["admin"], signed["hidden"]) == ("wordplus-realtime room", "class:7", 42, "audio", False, True, False, True)
+    assert (made["room"], made["user"]) == ("class:7", 42)
+    assert "media_key" not in made and "host" not in made and "recorder" not in made
+
+    # Encrypted, everyone gets the same key, which the realtime server never sees.
+    ann = made_call(realtime.group_call_token(42, "meeting:7", encrypt=True))
+    assert ann["media_key"] == made_call(realtime.group_call_token(34, "meeting:7", encrypt=True))["media_key"]
+    assert ann["media_key"] not in json.dumps(claims(ann["token"], "wordplus-realtime calls v1"))
+
+    # Nobody goes around the app through the SDK's own route.
+    assert realtime.authorize_call({"room": "class:7", "type": "video"}, 42) == {"denied": "forbidden"}
+
+
+def test_a_group_call_token_holds_the_recorder_proof_while_recording_is_unavailable():
+    held = app([], lambda path: {"ok": True})
+    assert "recorder" not in made_call(held.group_call_token(42, "class:7", admin=True))
+    assert "recorder" not in made_call(held.group_call_token(34, "class:7", record=True))
+
+
+def test_a_group_call_tokens_host_acts_through_the_sdks_route_with_its_proof_and_nobody_else(monkeypatch):
+    # The switch on: the old answer.
+    monkeypatch.setattr("wordplus_realtime.realtime.RECORDING_AVAILABLE", True)
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "muted": True, "recording": {"id": "rec123456", "state": "recording"}, "id": "rec123456", "state": "recording"})
+    host = made_call(realtime.group_call_token(42, "class:7", admin=True))
+    ask = {"moderate": "class:7", "act": "mute", "user": 34}
+
+    assert realtime.authorize_call({**ask, "host": host["host"]}, 42) == {"done": True}
+
+    before = len(sent)
+    assert realtime.authorize_call({**ask, "user": 42, "host": host["host"]}, 34) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**ask, "moderate": "class:8", "host": host["host"]}, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**ask, "host": {"until": host["host"]["until"], "proof": "A" * 43}}, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call(ask, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call({**ask, "host": {"until": 1000, "proof": host["host"]["proof"]}}, 42) == {"denied": "forbidden"}
+    assert len(sent) == before
+
+    # Recording, with a host's proof, or when told.
+    assert realtime.authorize_call({"call": "class:7", "record": "start"}, 42) == {"denied": "forbidden"}
+    assert "recording" in realtime.authorize_call({"call": "class:7", "record": "start", "recorder": host["recorder"]}, 42)
+    assert "recorder" not in made_call(realtime.group_call_token(42, "class:7", admin=True, record=False))
+    assert "recorder" in made_call(realtime.group_call_token(34, "class:7", record=True))
+
+    # A rule that owns the name decides, whatever proof a page holds.
+    realtime.group_calls("class:{id}", lambda user, p: True)
+    assert realtime.authorize_call({**ask, "host": host["host"]}, 42) == {"denied": "forbidden"}
+
+
+def test_a_stream_token_signs_who_they_are_as_asked_with_no_rule_and_a_visitor_can_only_watch():
+    realtime = app()
+
+    def grant(token):
+        payload = made_call(token)["token"].split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+    host = grant(realtime.stream_token(42, "show:7", role="host", src=["camera"], quality="720p", settings={"reactions": True, "people": "all", "stage": False, "chat": {"offline": "closed", "links": False, "fresh": True}}))
+    assert (host["str"], host["role"], host["sub"], host["name"], host["src"], host["q"], host["reactions"], host["people"], host["stage"], host["offline"], host["links"], host["fresh"]) == ("show:7", "host", "42", "User 42", ["camera"], "720p", True, "all", False, "closed", False, True)
+    assert host["exp"] - host["iat"] == 600
+
+    viewer = grant(realtime.stream_token(42, "show:7"))
+    assert (viewer["role"], viewer["sub"]) == ("viewer", "42")
+    visitor = grant(realtime.stream_token(None, "show:7"))
+    assert visitor["role"] == "viewer" and "sub" not in visitor
+    assert grant(realtime.stream_token(42, "show:7", mod=True))["mod"] is True
+
+    with pytest.raises(ValueError, match="can only be a viewer"):
+        realtime.stream_token(None, "show:7", role="host")
+    with pytest.raises(ValueError, match="not a name"):
+        realtime.stream_token(42, "has_underscore")
+
+    assert realtime.authorize_call({"stream": "show:7"}, 42) == {"denied": "forbidden"}
+
+
+def test_a_call_of_pair_lets_the_two_call_each_other_with_no_rule_and_nobody_else():
+    realtime = app()
+    assert realtime.calls("support:{pair}") is realtime
+
+    def ask(to):
+        return {"call": "support:34:42", "id": "abcDEF123_-xyz", "role": "caller", "to": to, "type": "video"}
+
+    assert "token" in realtime.authorize_call(ask(34), 42)
+    assert "token" in realtime.authorize_call(ask(42), 34)
+    assert "token" in realtime.authorize_call({"call": "support:34:42", "id": "abcDEF123_-xyz", "role": "callee", "from": 34}, 42)
+
+    # Someone else calling either of them, and either of them calling someone else, as a third person added would.
+    assert realtime.authorize_call(ask(34), 7) == {"denied": "forbidden"}
+    assert realtime.authorize_call(ask(7), 42) == {"denied": "forbidden"}
+
+
+def test_a_call_of_pair_asks_the_apps_rule_only_about_the_two():
+    asked = []
+
+    def rule(user, with_user, params, call, side):
+        asked.append((user, with_user, params, call, side))
+        return user == 42
+
+    realtime = app().calls("support:{pair}", rule)
+
+    def ask(to):
+        return {"call": "support:34:42", "id": "abcDEF123_-xyz", "role": "caller", "to": to, "type": "video"}
+
+    assert realtime.authorize_call(ask(34), 7) == {"denied": "forbidden"}
+    assert asked == []
+
+    assert "token" in realtime.authorize_call(ask(34), 42)
+    assert asked == [(42, 34, {"pair": "34:42"}, "support:34:42", {"role": "caller"})]
+    assert realtime.authorize_call(ask(42), 34) == {"denied": "forbidden"}
+
+
+@pytest.mark.parametrize(
+    "declare, message",
+    [
+        (lambda r: r.room("chat:{pair}", public=True), r"take `\{pair\}` off"),
+        (lambda r: r.group_calls("team:{pair}", lambda user: True), "not a group call"),
+        (lambda r: r.streams("show:{pair}", lambda user: "host"), "not a live stream"),
+        (lambda r: r.calls("support:{pair}", lambda user: True, people=lambda user: []), "only ever those two"),
+        (lambda r: r.calls("support:{id}"), "needs a rule"),
+    ],
+)
+def test_pair_is_refused_where_it_means_nothing(declare, message):
+    with pytest.raises(ValueError, match=message):
+        declare(app())
 
 
 def test_a_room_needs_a_rule_and_a_public_room_has_no_members():
@@ -337,11 +637,12 @@ def test_the_calls_route_takes_what_the_host_of_a_group_call_does_and_nothing_fr
     assert realtime.authorize_call({"moderate": "meeting:7", "act": "speak", "user": "auth0|5f7c8e"}, 1) == {"done": False}
     assert realtime.authorize_call({"moderate": "meeting:7", "act": "listen", "user": 42}, 1) == {"done": False}
     assert realtime.authorize_call({"moderate": "meeting:7", "act": "remove", "user": "42"}, 1) == {"done": True}
+    # Each names its host as ``by``; Make Listener and its promotion hold, a mute is once.
     assert [(s["path"], s["body"]) for s in sent] == [
-        ("/wordplus/realtime/calls/meeting%3A7/mute", {"user": "42", "track": "microphone"}),
-        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "auth0|5f7c8e", "publish": True}),
-        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "42", "publish": False}),
-        ("/wordplus/realtime/calls/meeting%3A7/remove", {"user": "42"}),
+        ("/wordplus/realtime/calls/meeting%3A7/mute", {"user": "42", "track": "microphone", "by": "1"}),
+        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "auth0|5f7c8e", "publish": True, "hold": True, "by": "1"}),
+        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "42", "publish": False, "hold": True, "by": "1"}),
+        ("/wordplus/realtime/calls/meeting%3A7/remove", {"user": "42", "by": "1"}),
     ]
 
     # Someone in it who isn't its host, a call no rule owns, an act or a person that isn't one, and the host themselves.
@@ -356,6 +657,272 @@ def test_the_calls_route_takes_what_the_host_of_a_group_call_does_and_nothing_fr
     failing = app(http=lambda method, url, headers, body: (500, b'{"ok":false,"error":"server"}'))
     failing.group_calls("meeting:{id}", lambda user: {"admin": True})
     assert failing.authorize_call({"moderate": "meeting:7", "act": "mute", "user": 42}, 1) == {"denied": "server"}
+
+
+def test_the_calls_route_records_a_group_call_for_whoever_its_rule_lets_record_its_admin_by_default():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "recording": {"id": "rec_abcdefgh12", "state": "recording"}} if path.endswith("/start") else {"ok": True, "state": "stopping"})
+    realtime.group_calls("meeting:{id}", lambda user: {1: {"admin": True}, 2: {"record": True}, 3: {"admin": True, "record": False}}.get(user, True))
+
+    assert realtime.authorize_call({"call": "meeting:7", "record": "start"}, 1) == {"recording": {"id": "rec_abcdefgh12", "state": "recording"}}
+    assert realtime.authorize_call({"call": "meeting:7", "record": "stop", "recording": "rec_abcdefgh12"}, 2) == {"recording": {"id": "rec_abcdefgh12", "state": "stopping"}}
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/recordings/start", {"product": "call", "room": "meeting:7", "type": "video", "meta": '{"by":"1"}'}),
+        ("/wordplus/realtime/recordings/stop", {"recording": "rec_abcdefgh12"}),
+    ]
+
+    # The room's answer says whom the call screen offers it to, asking the rule the same way.
+    offered = lambda user: realtime.authorize_call({"room": "meeting:7", "type": "video"}, user).get("record")
+    assert [offered(1), offered(2), offered(3), offered(42)] == [False, False, None, None]
+    # Held: the answer says True again once the switch is on.
+    import wordplus_realtime.realtime as held
+    held.RECORDING_AVAILABLE = True
+    try:
+        assert [offered(1), offered(2), offered(3), offered(42)] == [True, True, None, None]
+    finally:
+        held.RECORDING_AVAILABLE = False
+
+    # Its rule says no record for an admin, someone not its host, a stop naming no recording, an act that isn't one.
+    sent.clear()
+    assert realtime.authorize_call({"call": "meeting:7", "record": "start"}, 3) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"call": "meeting:7", "record": "start"}, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"call": "meeting:7", "record": "stop"}, 1) == {"denied": "bad_request"}
+    assert realtime.authorize_call({"call": "meeting:7", "record": "pause"}, 1) == {"denied": "bad_request"}
+    assert sent == []
+
+    # The cloud's refusal, for the call screen to say.
+    spent = app(http=lambda method, url, headers, body: (403, b'{"ok":false,"error":"no_credits"}'))
+    spent.group_calls("meeting:{id}", lambda user: {"admin": True})
+    assert spent.authorize_call({"call": "meeting:7", "record": "start"}, 1) == {"denied": "no_credits"}
+
+
+def test_recordings_start_stop_read_and_sync_through_the_realtime_server():
+    sent = []
+    answers = {
+        "/start": {"ok": True, "recording": {"id": "rec_stream0001", "state": "recording"}},
+        "/status": {"ok": True, "recording": {"id": "rec_stream0001", "state": "complete", "files": []}},
+        "/sync": {"ok": True, "recordings": [{"id": "rec_stream0001", "files": []}]},
+    }
+    realtime = app(sent, lambda path: next((a for end, a in answers.items() if path.endswith(end)), {"ok": True, "state": "stopping"}))
+
+    assert realtime.recordings.start(stream="show:1", meta="weekly", settings={"size": 1080}) == {"id": "rec_stream0001", "state": "recording"}
+    assert realtime.recordings.stop("rec_stream0001") == "stopping"
+    assert realtime.recordings.get("rec_stream0001")["state"] == "complete"
+    assert realtime.recordings.sync(["rec_older00001"], 5) == [{"id": "rec_stream0001", "files": []}]
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/recordings/start", {"product": "stream", "stream": "show:1", "meta": "weekly", "settings": {"size": 1080}}),
+        ("/wordplus/realtime/recordings/stop", {"recording": "rec_stream0001"}),
+        ("/wordplus/realtime/recordings/status", {"recording": "rec_stream0001"}),
+        ("/wordplus/realtime/recordings/sync", {"ack": ["rec_older00001"], "limit": 5}),
+    ]
+
+
+def test_the_calls_route_takes_a_hosts_spotlight_themselves_too_and_takes_everyone_out_with_nobody_named():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "changed": True, "spotlight": []})
+    realtime.group_calls("meeting:{id}", lambda user: {"admin": True} if user == 1 else True)
+
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "spotlight", "user": 42}, 1) == {"done": True}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "spotlight", "user": 1}, 1) == {"done": True}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "unspotlight", "user": 42}, 1) == {"done": True}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "unspotlight", "user": None}, 1) == {"done": True}
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"user": "42", "on": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"user": "1", "on": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"user": "42", "on": False}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"on": False}),
+    ]
+
+    # Nobody named is for taking everyone out alone, and a member spotlights nobody.
+    sent.clear()
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "spotlight", "user": None}, 1) == {"denied": "bad_request"}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "mute", "user": None}, 1) == {"denied": "bad_request"}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "spotlight", "user": 42}, 42) == {"denied": "forbidden"}
+    assert sent == []
+
+    # A fifth person: the cloud's refusal, for the call screen to say.
+    full = app(http=lambda method, url, headers, body: (409, b'{"ok":false,"error":"spotlight_full"}'))
+    full.group_calls("meeting:{id}", lambda user: {"admin": True})
+    assert full.authorize_call({"moderate": "meeting:7", "act": "spotlight", "user": 42}, 1) == {"denied": "spotlight_full"}
+
+
+def test_the_calls_route_takes_every_act_of_a_hosts_screen_as_better_messages_holds_them():
+    answers = {
+        "mute": {"ok": True, "muted": False},
+        "unmute": {"ok": True, "changed": True},
+        "ban": {"ok": True, "removed": False, "until": 1791640000000},
+        "unban": {"ok": True, "unbanned": True},
+        "rules": {"ok": True, "rules": {"mode": "broadcast", "locked": True, "muted": False}},
+        "ask": {"ok": True, "id": "ask_1", "devices": ["camera"]},
+        "end": {"ok": True},
+    }
+    sent = []
+    realtime = app(sent, lambda path: answers.get(path.rsplit("/", 1)[-1], {"ok": True}))
+    realtime.group_calls("meeting:{id}", lambda user: {"admin": True} if user == 1 else True)
+
+    def act(request):
+        return realtime.authorize_call({"moderate": "meeting:7", **request}, 1)
+
+    assert act({"act": "hold_mic", "user": 42}) == {"done": True}
+    assert act({"act": "release_mic", "user": 42}) == {"done": True}
+    assert act({"act": "ban", "user": 42, "minutes": 30}) == {"done": True}
+    assert act({"act": "ban", "user": "auth0|5f7c8e"}) == {"done": True}
+    assert act({"act": "unban", "user": 42}) == {"done": True}
+    assert act({"act": "rules", "user": None, "rules": {"mode": "broadcast", "locked": True}}) == {"done": True, "rules": {"mode": "broadcast", "locked": True, "muted": False}}
+    assert act({"act": "ask", "user": 42, "devices": ["camera"]}) == {"done": True, "id": "ask_1"}
+    assert act({"act": "end", "user": None}) == {"done": True}
+    assert [(s["path"].replace("/wordplus/realtime/calls/meeting%3A7", ""), s["body"]) for s in sent] == [
+        ("/mute", {"user": "42", "track": "microphone", "hold": True, "by": "1"}),
+        ("/unmute", {"user": "42", "by": "1"}),
+        ("/ban", {"user": "42", "minutes": 30, "by": "1"}),
+        ("/ban", {"user": "auth0|5f7c8e", "by": "1"}),
+        ("/unban", {"user": "42", "by": "1"}),
+        ("/rules", {"mode": "broadcast", "locked": True, "by": "1"}),
+        ("/ask", {"user": "42", "devices": ["camera"], "by": "1"}),
+        ("/end", {"by": "1"}),
+    ]
+
+    # What an act carries is checked before anyone is asked: a ban's minutes, an ask's devices, the rules, and rules and
+    # end, which name nobody.
+    sent.clear()
+    for wrong in [
+        {"act": "ban", "user": 42, "minutes": 0}, {"act": "ban", "user": 42, "minutes": 10081}, {"act": "ban", "user": 42, "minutes": 1.5}, {"act": "ban", "user": 42, "minutes": True},
+        {"act": "ask", "user": 42}, {"act": "ask", "user": 42, "devices": []}, {"act": "ask", "user": 42, "devices": ["screen"]}, {"act": "ask", "user": 42, "devices": ["camera", "camera"]},
+        {"act": "rules", "user": None}, {"act": "rules", "user": None, "rules": {}}, {"act": "rules", "user": None, "rules": {"mode": "quiet"}}, {"act": "rules", "user": None, "rules": {"locked": "yes"}},
+        {"act": "rules", "user": 42, "rules": {"locked": True}}, {"act": "end", "user": 42}, {"act": "ban", "user": 1}, {"act": "ask", "user": 1, "devices": ["camera"]},
+        {"act": "record", "user": 42}, {"act": "hand", "user": 42},
+    ]:
+        assert act(wrong) == {"denied": "bad_request"}, wrong
+    # Someone who isn't its host.
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "end", "user": None}, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"moderate": "meeting:7", "act": "ban", "user": 43}, 42) == {"denied": "forbidden"}
+    assert sent == []
+
+    # The cloud's refusals the screen says in its own words: a host banned, an ask again, someone gone.
+    for code, status in (("forbidden", 403), ("asked_recently", 429), ("not_in_call", 404)):
+        refusing = app(http=lambda method, url, headers, body, code=code, status=status: (status, json.dumps({"ok": False, "error": code}).encode()))
+        refusing.group_calls("meeting:{id}", lambda user: {"admin": True})
+        assert refusing.authorize_call({"moderate": "meeting:7", "act": "ask", "user": 42, "devices": ["microphone"]}, 1) == {"denied": code}
+
+
+def test_a_host_acts_on_the_new_acts_with_the_proof_of_its_token_and_a_member_proof_is_no_hosts():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "until": 1, "removed": True})
+    host = made_call(realtime.group_call_token(1, "class:7", admin=True))
+    member = made_call(realtime.group_call_token(42, "class:7"))
+
+    assert realtime.authorize_call({"moderate": "class:7", "act": "ban", "user": 42, "host": host["host"]}, 1) == {"done": True}
+    assert realtime.authorize_call({"moderate": "class:7", "act": "ban", "user": 43, "host": member["member"]}, 42) == {"denied": "forbidden"}
+    assert len(sent) == 1
+
+
+def test_every_group_call_token_and_room_answer_names_its_acts_and_everyone_gets_the_proof_of_being_in_it():
+    realtime = app()
+    realtime.group_calls("meeting:{id}", lambda user: {"admin": True} if user == 1 else True)
+    acts = ["remove", "ban", "listen", "speak", "mute", "hold_mic", "release_mic", "rules", "hand", "ask", "end", "spotlight"]
+
+    host = made_call(realtime.group_call_token(1, "class:7", admin=True))
+    member = made_call(realtime.group_call_token(42, "class:7"))
+    assert host["acts"] == acts and member["acts"] == acts
+    assert isinstance(member["member"]["until"], int) and isinstance(member["member"]["proof"], str)
+    assert host["member"]["proof"] != member["member"]["proof"]
+    assert "host" not in member
+    # No recording is offered among them.
+    assert "record" not in member["acts"]
+
+    assert realtime.authorize_call({"room": "meeting:7", "type": "video"}, 42)["acts"] == acts
+    assert realtime.authorize_call({"room": "meeting:7", "type": "video"}, 1)["acts"] == acts
+    assert "acts" not in realtime.authorize_call({"room": "board:7", "type": "video"}, 1)
+
+
+def test_the_calls_route_takes_a_raised_hand_from_anyone_in_the_call_and_a_lowered_one_from_a_host():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "lowered": 2} if path.endswith("/lower") else {"ok": True, "changed": True})
+    realtime.group_calls("meeting:{id}", lambda user: {"admin": True} if user == 1 else user == 42)
+    made = made_call(realtime.group_call_token(56, "class:7"))
+    host = made_call(realtime.group_call_token(1, "class:7", admin=True))
+
+    assert realtime.authorize_call({"hand": "meeting:7", "up": True}, 42) == {"done": True}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": False}, 42) == {"done": True}
+    assert realtime.authorize_call({"hand": "class:7", "up": True, "member": made["member"]}, 56) == {"done": True}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": False, "user": 42}, 1) == {"done": True}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": False, "user": None}, 1) == {"done": True}
+    assert realtime.authorize_call({"hand": "class:7", "up": False, "user": 56, "host": host["host"]}, 1) == {"done": True}
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/calls/meeting%3A7/hand", {"user": "42", "up": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/hand", {"user": "42", "up": False}),
+        ("/wordplus/realtime/calls/class%3A7/hand", {"user": "56", "up": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/hand", {"user": "42", "up": False}),
+        ("/wordplus/realtime/calls/meeting%3A7/hands/lower", {"by": "1"}),
+        ("/wordplus/realtime/calls/class%3A7/hand", {"user": "56", "up": False}),
+    ]
+
+    # Someone the rule keeps out, a proof of another user or call, a member lowering another's, a host raising one.
+    sent.clear()
+    assert realtime.authorize_call({"hand": "meeting:7", "up": True}, 43) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"hand": "class:7", "up": True}, 56) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"hand": "class:7", "up": True, "member": made["member"]}, 57) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"hand": "class:8", "up": True, "member": made["member"]}, 56) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": False, "user": 43}, 42) == {"denied": "forbidden"}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": True, "user": 43}, 1) == {"denied": "bad_request"}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": "yes"}, 42) == {"denied": "bad_request"}
+    assert realtime.authorize_call({"hand": "meeting:7", "up": False, "user": "two words"}, 1) == {"denied": "bad_request"}
+    assert sent == []
+
+
+def test_a_call_sends_what_1_0_sent_when_left_as_it_was_and_the_holds_and_by_only_when_given():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "muted": True, "removed": True, "changed": True, "unbanned": True, "lowered": 0, "until": 5,
+                                       "rules": {"mode": "participatory", "locked": True, "muted": False}, "bans": [{"user": "43", "until": 5}, {"user": "44", "until": None}],
+                                       "id": "a1", "devices": ["microphone"]})
+    call = realtime.call("meeting:7")
+
+    assert call.mute(42) is True
+    assert call.remove(42) is True
+    assert call.permit(42, publish=True) is True
+    assert call.let_speak(42) is True
+    call.end()
+    assert call.mute(42, "microphone", hold=True, by=1) is True
+    assert call.unmute(42) is True
+    assert call.permit(42, publish=False, hold=True, by=1) is True
+    assert call.remove(42, by=1) is True
+    assert call.ban(42, minutes=60, by=1) == {"removed": True, "until": 5}
+    assert call.unban(42) is True
+    assert call.bans() == [{"user": "43", "until": 5}, {"user": "44", "until": None}]
+    assert call.rules(locked=True) == {"mode": "participatory", "locked": True, "muted": False}
+    assert call.hand(42, True) is True
+    assert call.lower_hands() == 0
+    assert call.ask(42, ["microphone"], 1) == {"id": "a1", "devices": ["microphone"]}
+    call.end(by=1)
+
+    assert [(s["method"], s["path"].replace("/wordplus/realtime/calls/meeting%3A7", ""), s["body"]) for s in sent] == [
+        ("POST", "/mute", {"user": "42", "track": "microphone"}),
+        ("POST", "/remove", {"user": "42"}),
+        ("POST", "/permit", {"user": "42", "publish": True}),
+        ("POST", "/permit", {"user": "42", "publish": True}),
+        ("POST", "/end", None),
+        ("POST", "/mute", {"user": "42", "track": "microphone", "hold": True, "by": "1"}),
+        ("POST", "/unmute", {"user": "42"}),
+        ("POST", "/permit", {"user": "42", "publish": False, "hold": True, "by": "1"}),
+        ("POST", "/remove", {"user": "42", "by": "1"}),
+        ("POST", "/ban", {"user": "42", "minutes": 60, "by": "1"}),
+        ("POST", "/unban", {"user": "42"}),
+        ("GET", "/bans", None),
+        ("POST", "/rules", {"locked": True}),
+        ("POST", "/hand", {"user": "42", "up": True}),
+        ("POST", "/hands/lower", None),
+        ("POST", "/ask", {"user": "42", "devices": ["microphone"], "by": "1"}),
+        ("POST", "/end", {"by": "1"}),
+    ]
+
+
+def test_the_calls_route_still_takes_a_1_0_screens_act_with_no_acts_member_or_the_new_fields():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "muted": True, "removed": True, "changed": True})
+    host = made_call(realtime.group_call_token(1, "class:7", admin=True))
+    assert realtime.authorize_call({"moderate": "class:7", "act": "mute", "user": 42, "host": host["host"]}, 1) == {"done": True}
+    assert realtime.authorize_call({"moderate": "class:7", "act": "unspotlight", "user": None, "host": host["host"]}, 1) == {"done": True}
+    assert [s["body"] for s in sent] == [{"user": "42", "track": "microphone", "by": "1"}, {"on": False}]
 
 
 def test_the_calls_route_answers_whether_a_user_may_call_each_person_for_the_call_buttons_of_a_list():
@@ -431,7 +998,26 @@ def test_the_keys_route_gives_a_users_keys_and_identity_and_the_keys_they_may_ha
 
     asked = realtime.keys_answer(["d:" + str(today + 1), "d:" + str(today + 2), "u:42:1", "u:43:1", "ch:order:42:1", "ch:order:42:2", "ch:order:43:1", "ch:news:1", "note:7", "note:8", "nonsense"], 42)
     assert asked["keys"] == [keys.entry("d:" + str(today + 1)), keys.entry("u:42:1"), keys.entry("ch:order:42:1"), keys.entry("note:7")]
-    assert realtime.keys_answer([], None) == {"keys": []}
+    assert realtime.keys_answer([], None) == {"keys": [], "app": V["site"]}
+
+
+def test_the_directory_hash_follows_the_day_where_the_entry_is_sealed(monkeypatch):
+    # The server keeps an entry as long as its hash matches: with one hash for weeks, a user who kept reconnecting kept
+    # an entry sealed weeks ago (wordplus/realtime 64ca239). @wordplus/realtime c95f330.
+    def on(day, name, seal=True):
+        monkeypatch.setattr("wordplus_realtime.keys.time.time", lambda: day * 86400)
+        return keys.profile(42, {"name": name}, seal)["pdh"]
+
+    monday = on(20395, "Ann")
+    tuesday = on(20396, "Ann")
+    assert re.fullmatch(r"[0-9a-f]{64}", monday)
+    assert monday[-8:] == "00004fab"
+    assert tuesday[-8:] == "00004fac"
+    assert tuesday[:56] == monday[:56]
+    assert on(20395, "Ben")[:56] != monday[:56]
+
+    # Nothing sealed, so nothing follows the day.
+    assert on(20395, "Ann", False) == on(20396, "Ann", False)
 
 
 def test_a_string_id_gets_its_keys_and_identity_and_a_hidden_user_is_marked():
@@ -461,7 +1047,7 @@ def test_a_rooms_key_moves_on_and_the_newest_comes_beside_an_older_one():
 
 
 def test_no_key_for_a_user_cut_off_and_no_identity_without_a_profile():
-    assert app(has_keys=lambda user: user != 42).keys_answer([], 42) == {"keys": []}
+    assert app(has_keys=lambda user: user != 42).keys_answer([], 42) == {"keys": [], "app": V["site"]}
     assert "identity" not in app(profile=lambda user: None).keys_answer([], 42)
 
 
@@ -546,6 +1132,139 @@ def test_reading_a_rooms_count_members_and_history_opened_erasing_it_and_kicking
     assert store.get("ch:chat:1") == 2
 
 
+def test_one_room_by_its_name_alone_reads_it_sends_to_it_and_takes_someone_out_as_in_room_and_kick_still_do():
+    sent = []
+    store = {}
+
+    class Store:
+        def get(self, name):
+            return store.get(name)
+
+        def set(self, name, value):
+            store[name] = value
+
+    realtime = app(
+        sent,
+        lambda path: {"ok": True, "ids": {"chat:1": "1-0"}} if path.endswith("/emit") else {"ok": True, "count": 3},
+        generations=Store(),
+    )
+    room = realtime.room("chat:1")
+
+    assert room.count() == 3
+    assert room.emit("renamed", {"title": "Team"}) == {"chat:1": "1-0"}
+    room.remove(43)
+    realtime.in_room("chat:1").kick(44)
+
+    assert [(s["method"], s["path"]) for s in sent] == [
+        ("GET", "/wordplus/realtime/rooms/chat%3A1"),
+        ("POST", "/wordplus/realtime/emit"),
+        ("POST", "/wordplus/realtime/rooms/chat%3A1/kick"),
+        ("POST", "/wordplus/realtime/rooms/chat%3A1/kick"),
+    ]
+    assert sent[2]["body"] == {"user": "43"}
+    assert sent[3]["body"] == {"user": "44"}
+
+
+def test_everyone_out_of_a_room_and_its_rule_asked_again_for_one_or_all_moving_its_key_on_each_time():
+    sent = []
+    store = {}
+
+    class Store:
+        def get(self, name):
+            return store.get(name)
+
+        def set(self, name, value):
+            store[name] = value
+
+    realtime = app(sent, lambda path: {"ok": True}, generations=Store())
+    room = realtime.room("chat:1")
+
+    room.remove_everyone()
+    assert store["ch:chat:1"] == 2
+    room.recheck(43)
+    assert store["ch:chat:1"] == 3
+    room.recheck_everyone()
+    assert store["ch:chat:1"] == 4
+
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/rooms/chat%3A1/kick", {"everyone": True}),
+        ("/wordplus/realtime/rooms/chat%3A1/recheck", {"user": "43"}),
+        ("/wordplus/realtime/rooms/chat%3A1/recheck", {"everyone": True}),
+    ]
+
+
+def test_sending_to_everyone_with_no_room_to_join_never_sealed_leaving_out_the_tab_named():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "ids": {}})
+
+    realtime.to_everyone().emit("notice", {"text": "Back at 9"})
+    assert sent[0]["path"] == "/wordplus/realtime/emit"
+    assert sent[0]["body"] == {"everyone": True, "event": "notice", "data": {"text": "Back at 9"}}
+
+    realtime.to_everyone().except_tab("tab1").emit("notice")
+    assert sent[1]["body"] == {"everyone": True, "event": "notice", "data": None, "except": "tab1"}
+
+    realtime.batch([{"everyone": True, "event": "notice", "data": 1}])
+    assert sent[2]["body"] == {"everyone": True, "event": "notice", "data": 1}
+
+    for mixed in ({"rooms": "chat:1"}, {"users": 42}):
+        with pytest.raises(RealtimeError) as refused:
+            realtime.emit_event({"everyone": True, "event": "notice", **mixed})
+        assert refused.value.code == "bad_request"
+    assert len(sent) == 3
+
+
+def test_a_room_token_says_when_it_was_signed_to_the_millisecond_within_its_second_and_a_public_grant_does_not():
+    realtime = app([])
+    realtime.room("chat:{id}", lambda user, p: user == 42)
+    realtime.room("news:{id}", public=True)
+
+    def claims(token):
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+
+    room = claims(realtime.authorize(["chat:1"], 42)["token"])
+    assert room["ms"] // 1000 == room["iat"]
+
+    assert "ms" not in claims(realtime.public_grants()[0]["token"])
+
+    # A clock given to the constructor says another second than the machine's, and `ms` stays within `iat`.
+    fixed = app([], now=lambda: 1800000000)
+    fixed.room("chat:{id}", lambda user, p: user == 42)
+    assert claims(fixed.authorize(["chat:1"], 42)["token"])["ms"] == 1800000000000
+
+
+def test_call_group_call_and_stream_tokens_say_when_they_were_signed_to_the_millisecond_as_a_room_token_does():
+    import time
+
+    def claims(token):
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+
+    def tokens(realtime):
+        realtime.group_calls("meeting:{id}", lambda user: True)
+        return {
+            "call_token": made_call(realtime.call_token(42, 34))["token"],
+            "group_call_token": made_call(realtime.group_call_token(42, "class:7"))["token"],
+            "group_calls": realtime.authorize_call({"room": "meeting:daily"}, 42)["token"],
+            "stream_token": made_call(realtime.stream_token(42, "show:7"))["token"],
+        }
+
+    before = int(time.time() * 1000)
+    made = tokens(app([]))
+    after = int(time.time() * 1000)
+    for what, token in made.items():
+        c = claims(token)
+        assert before <= c["ms"] <= after, what
+        assert c["ms"] // 1000 == c["iat"], what
+    # In a stream's grant `ms` comes right after `iat`, as every language orders it.
+    assert list(claims(made["stream_token"]))[-3:] == ["iat", "ms", "exp"]
+
+    # A clock given to the constructor says another second than the machine's, and `ms` stays within `iat`.
+    for what, token in tokens(app([], now=lambda: 1800000000)).items():
+        assert claims(token)["ms"] == 1800000000000, what
+
+
 def test_reading_who_is_online():
     sent = []
     realtime = app(sent, lambda path: {"ok": True, "count": 2, "online": [{"id": "34", "online": True}, {"id": "42", "online": False, "at": 5}]} if "ids=" in path else {"ok": True, "count": 2, "ids": ["34", "43"], "next": "0"})
@@ -555,6 +1274,28 @@ def test_reading_who_is_online():
     assert realtime.online.count() == 2
     assert realtime.online.list() == {"ids": ["34", "43"], "next": "0"}
     assert sent[0]["path"] == "/wordplus/realtime/online?ids=34,42"
+
+
+def test_asking_the_pages_of_a_user_from_async_code_on_a_worker_thread():
+    import asyncio
+    import threading
+
+    reply = Keys(V["local_key"]).seal_json({"ok": 1}, "u:42:1")
+    threads = []
+
+    def answer(path):
+        threads.append(threading.current_thread())
+        return {"ok": True, "replies": [{"data": reply, "at": 7}]}
+
+    sent = []
+    realtime = app(sent, answer)
+
+    # An async route (FastAPI, Starlette, Django's async views) awaits it: the request waits up to its timeout for a page,
+    # off the event loop, so the loop goes on serving others meanwhile.
+    assert asyncio.run(realtime.user(42).aask("cart", {"why": "checkout"}, timeout=5000, all=True)) == [{"data": {"ok": 1}, "at": 7}]
+    assert threads[0] is not threading.main_thread()
+    assert sent[0]["path"] == "/wordplus/realtime/users/42/ask"
+    assert sent[0]["body"]["timeout"] == 5000 and sent[0]["body"]["all"] is True
 
 
 def test_reaching_rooms_users_usage_the_webhook_group_calls_and_live_streams():
@@ -689,6 +1430,23 @@ def test_a_webhook_hands_what_people_used_to_its_handlers_for_an_app_that_charge
     assert charged == [["call", "support:34:42", 42, 125], ["group", "team:7", "auth0|5f7c", 61], ["stream", "live:1", 42, 30]]
 
 
+def test_a_webhook_hands_a_hosts_act_in_a_group_call_to_its_handler():
+    realtime = app(now=lambda: int(V["webhook"]["timestamp"]))
+    acts = []
+    realtime.on("call.moderated", lambda e: acts.append([e["act"], e["call"], e["user"], e["by"], e["held"], e.get("minutes"), e.get("rules")]))
+
+    body = json.dumps({"events": [
+        {"id": "m1", "at": 1, "type": "call.moderated", "call": "meeting:7", "act": "ban", "user": "43", "by": "1", "held": True, "minutes": 30},
+        {"id": "m2", "at": 2, "type": "call.moderated", "call": "meeting:7", "act": "rules", "user": None, "by": None, "held": True,
+         "rules": {"mode": "broadcast", "locked": False, "muted": False}},
+    ]})
+    assert realtime.webhook(body.encode(), hook_headers(body), V["webhook"]["path"]) == (204, None)
+    assert acts == [
+        ["ban", "meeting:7", "43", "1", True, 30, None],
+        ["rules", "meeting:7", None, None, True, None, {"mode": "broadcast", "locked": False, "muted": False}],
+    ]
+
+
 def test_a_webhook_the_server_didnt_sign_a_stale_one_and_a_failing_handler_are_refused():
     now = [int(V["webhook"]["timestamp"])]
     realtime = app(now=lambda: now[0])
@@ -752,7 +1510,7 @@ def test_the_browser_files_are_served_as_the_package_carries_them():
     # The copies are the files their manifest names, so a copy left behind fails here.
     with open(os.path.join(FILES_DIR, "files.json"), encoding="utf-8") as f:
         manifest = json.load(f)
-    assert list(manifest["files"]) == ["realtime.js", "realtime-worker.js", "realtime-rooms.min.js", "realtime-rooms-e2ee.worker.js", "realtime-ui.min.js", "realtime-ui-streams.min.js"]
+    assert list(manifest["files"]) == ["realtime.js", "realtime-worker.js", "realtime-rooms.min.js", "realtime-rooms-e2ee.worker.js", "realtime-ui.min.js", "realtime-ui-streams.min.js", "realtime-ui-recording.min.js", "hls.light.min.js"]
     for name, sha in manifest["files"].items():
         with open(os.path.join(FILES_DIR, name), "rb") as f:
             text = f.read()
@@ -807,6 +1565,42 @@ def test_from_the_environment(monkeypatch):
     monkeypatch.setenv("WORDPLUS_SECRET", "x")
     monkeypatch.setenv("WORDPLUS_LOCAL_KEY", V["local_key"])
     assert Realtime.from_environment().site == "s1"
+    assert Realtime.from_environment().app == "s1"
+    assert Realtime.from_environment(app="s2").app == "s2"
+    assert Realtime.from_environment(site="s3").app == "s3"
+
+
+def test_the_app_is_named_app_and_still_site():
+    assert Realtime("s1", "x", V["local_key"]).app == "s1"
+    assert Realtime(app="s1", secret="x", local_key=V["local_key"]).app == "s1"
+    assert Realtime(site="s1", secret="x", local_key=V["local_key"]).app == "s1"
+    assert Realtime(app="s1", site="s2", secret="x", local_key=V["local_key"]).config(None)["site"] == "s1"
+    with pytest.raises(ValueError, match="WORDPLUS_SITE and WORDPLUS_SECRET"):
+        Realtime(secret="x", local_key=V["local_key"])
+
+
+def test_the_keys_route_names_the_app_for_a_page_that_connects_with_no_options():
+    realtime = app()
+    assert realtime.keys_answer([], None)["app"] == V["site"]
+    assert realtime.keys_answer([], 42)["app"] == V["site"]
+    # Keys asked for by name are that and nothing more.
+    assert "app" not in realtime.keys_answer(["u:42:1"], 42)
+
+
+def test_a_rooms_history_keeps_the_seconds_it_names_within_the_clouds_five_minutes():
+    realtime = app()
+    realtime.room("a:{id}", lambda user: True, history={"last": 30, "seconds": 120})
+    realtime.room("b:{id}", lambda user: True, history={"last": 30, "seconds": "120"})
+    realtime.room("c:{id}", lambda user: True, history={"last": 30, "seconds": 3600})
+    realtime.room("d:{id}", lambda user: True, history={"last": 30, "seconds": 0})
+
+    c = claims(realtime.authorize(["a:1", "b:1", "c:1", "d:1"], 42)["token"], "wordplus-realtime channels v1")
+    assert c["r"] == {
+        "a:1": {"h": [30, 120 / 86400]},
+        "b:1": {"h": [30, 120 / 86400]},
+        "c:1": {"h": [30, MAX_HISTORY_DAYS]},
+        "d:1": {"h": [30, MAX_HISTORY_DAYS]},
+    }
 
 
 def test_live_streams_sign_easy_streams_own_vectors():
@@ -832,7 +1626,7 @@ def test_the_calls_route_answers_a_streams_grant_as_its_rule_and_settings_say_a_
 
     host = realtime.authorize_call({"stream": "show:42"}, 1)
     c = claims(host["token"], "easy-stream grant v1")
-    assert list(c) == ["iss", "aud", "str", "role", "sub", "name", "avatar", "q", "stage", "offline", "links", "reactions", "iat", "exp"]
+    assert list(c) == ["iss", "aud", "str", "role", "sub", "name", "avatar", "q", "stage", "offline", "links", "reactions", "iat", "ms", "exp"]
     assert {k: c[k] for k in list(c)[:12]} == {"iss": V["site"], "aud": "easy-stream", "str": "show:42", "role": "host", "sub": "1", "name": "User 1", "avatar": "https://example.com/1.png", "q": "720p", "stage": False, "offline": "open", "links": False, "reactions": True}
     assert c["exp"] - c["iat"] == 600 and host["exp"] == c["exp"]
 
@@ -857,9 +1651,9 @@ def test_the_keys_may_be_checked_when_first_used_so_a_framework_command_runs_wit
     later.room("order:{id}", lambda user, p: True)
     later.calls("support:{a}:{b}", lambda user, other, p: True)
     assert later.file_at("realtime.js").startswith("/api/realtime/files/")
-    with pytest.raises(ValueError, match="site and secret are required"):
+    with pytest.raises(ValueError, match="WORDPLUS_SITE and WORDPLUS_SECRET"):
         later.config(42)
-    with pytest.raises(ValueError, match="site and secret are required"):
+    with pytest.raises(ValueError, match="WORDPLUS_SITE and WORDPLUS_SECRET"):
         later.to("order:1").emit("updated", {})
 
     # A local key checked when the keys are first used.
@@ -877,3 +1671,112 @@ def test_the_local_cloud_comes_from_the_environment(monkeypatch):
     config = Realtime.from_environment().config(None)
     assert (config["server"], config["api"]) == ("http://127.0.0.1:17613", "http://127.0.0.1:17613")
     assert Realtime.from_environment(server="https://ws.example.test").config(None)["server"] == "https://ws.example.test"
+
+
+def test_a_user_is_sent_to_from_their_own_handle_as_a_room_from_its_own():
+    sent = []
+    realtime = app(sent)
+
+    realtime.user(42).emit("notice", {"text": "Hi"}, seal=False, except_tab="tab-1")
+    realtime.room("order:42").emit("updated", {"status": "paid"}, seal=False, except_tab="tab-2")
+
+    assert sent[0]["path"] == "/wordplus/realtime/emit"
+    assert sent[0]["body"] == {"users": ["42"], "event": "notice", "data": {"text": "Hi"}, "except": "tab-1"}
+    assert sent[1]["body"] == {"rooms": ["order:42"], "event": "updated", "data": {"status": "paid"}, "except": "tab-2"}
+
+
+def test_a_host_on_the_server_has_the_words_a_host_has_on_the_page():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "muted": True, "changed": True})
+    call = realtime.call("meeting:7")
+
+    assert call.mute(42) is True
+    assert call.let_speak(43) is True
+    assert call.make_listener(43) is True
+    assert call.spotlight_on(43) is True
+    assert call.spotlight_off(43) is True
+    assert call.spotlight_off() is True
+
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/calls/meeting%3A7/mute", {"user": "42", "track": "microphone"}),
+        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "43", "publish": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/permit", {"user": "43", "publish": False}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"user": "43", "on": True}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"user": "43", "on": False}),
+        ("/wordplus/realtime/calls/meeting%3A7/spotlight", {"on": False}),
+    ]
+
+
+def test_someone_leaves_a_stream_as_a_room_or_a_call_and_kick_still_does_it():
+    sent = []
+    realtime = app(sent)
+
+    realtime.stream("show:1").remove(7)
+    realtime.stream("show:1").kick(8)
+
+    assert [(s["path"], s["body"]) for s in sent] == [
+        ("/wordplus/realtime/streams/show%3A1/kick", {"user": "7"}),
+        ("/wordplus/realtime/streams/show%3A1/kick", {"user": "8"}),
+    ]
+
+
+def test_a_name_no_rule_owns_is_said_once_in_the_log_and_refused_as_ever(caplog):
+    realtime = app()
+
+    with caplog.at_level("WARNING", logger="wordplus_realtime"):
+        assert realtime.authorize(["nothing:1"], 42)["denied"] == {"nothing:1": "no_rule"}
+        realtime.authorize(["nothing:1"], 43)
+        assert realtime.authorize_call({"call": "nothing:1", "id": "attempt-1", "role": "caller", "to": 43}, 42) == {"denied": "forbidden"}
+        assert realtime.authorize_call({"room": "nothing:1"}, 42) == {"denied": "forbidden"}
+        assert realtime.authorize_call({"stream": "nothing:1"}, 42) == {"denied": "forbidden"}
+
+    said = [record.getMessage() for record in caplog.records]
+    assert len(said) == 4
+    assert "'nothing:1'" in said[0] and "realtime.room(" in said[0]
+    assert "realtime.call_token(" in said[1]
+    assert "realtime.group_call_token(" in said[2]
+    assert "realtime.stream_token(" in said[3]
+
+
+def test_a_user_a_rule_turned_away_says_nothing_in_the_log(caplog):
+    realtime = app()
+    realtime.room("order:{id}", lambda user, params: False)
+
+    with caplog.at_level("WARNING", logger="wordplus_realtime"):
+        assert realtime.authorize(["order:1"], 42)["denied"] == {"order:1": "forbidden"}
+
+    assert caplog.records == []
+
+
+def test_it_stops_saying_so_after_a_few_names_however_many_a_page_makes_up(caplog):
+    realtime = app()
+
+    with caplog.at_level("WARNING", logger="wordplus_realtime"):
+        for i in range(40):
+            realtime.authorize(["nothing:" + str(i)], 42)
+
+    assert len(caplog.records) == 20
+
+
+def test_all_of_it_runs_from_async_code_under_aio():
+    sent = []
+    realtime = app(sent, lambda path: {"ok": True, "count": 3, "changed": True, "ids": {}})
+    realtime.room("order:{id}", lambda user, params: True)
+
+    async def go():
+        count = await realtime.aio.room("chat:7").count()
+        await realtime.aio.to("chat:7").except_tab("tab-1").emit("updated", {"a": 1}, seal=False)
+        await realtime.aio.user(42).emit("notice", seal=False)
+        changed = await realtime.aio.call("meeting:7").let_speak(43)
+        online = await realtime.aio.online.count()
+        return count, changed, online
+
+    assert asyncio.run(go()) == (3, True, 3)
+    assert [s["path"] for s in sent] == [
+        "/wordplus/realtime/rooms/chat%3A7",
+        "/wordplus/realtime/emit",
+        "/wordplus/realtime/emit",
+        "/wordplus/realtime/calls/meeting%3A7/permit",
+        "/wordplus/realtime/online?limit=1",
+    ]
+    assert sent[1]["body"]["except"] == "tab-1"

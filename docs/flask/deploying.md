@@ -9,7 +9,7 @@ Under Gunicorn or uWSGI behind nginx, or on a PaaS: nothing realtime is kept on 
 | `WORDPLUS_SITE`, `WORDPLUS_SECRET` | from your app in WordPlus Cloud |
 | `WORDPLUS_LOCAL_KEY` | yours: kept as long as the app |
 
-Set them in the server environment, as you do `SECRET_KEY`. Keep the secret and the local key out of your repository and out of every page. The key reaches pages through `config()`, which is what it is for.
+Set them in the server environment, as you do `SECRET_KEY`. Keep the secret and the local key out of your repository and out of every page. The key reaches pages through `{{ wordplus_realtime() }}`, which is what it is for.
 
 ## Its addresses
 
@@ -19,13 +19,38 @@ Add every address your pages are served from to the app in WordPlus Cloud: schem
 
 `realtime.js`, `realtime-worker.js`, `realtime-rooms.min.js`, `realtime-rooms-e2ee.worker.js`, `realtime-ui.min.js` and `realtime-ui-streams.min.js` come with the package, and `init_app()` serves them at `/api/realtime/files/{version}/{name}`, from the address of your pages, where a browser runs a worker. Each release serves the ones its package came with, nothing is copied, and each answer is kept for a year as immutable, so a CDN in front of your app keeps them too.
 
-## Workers
+## Another address
 
-Every Gunicorn worker answers the realtime route, and an emit is an HTTPS request to WordPlus Cloud, done in the view. For many emits, or ones you do not want a request to wait on, send them from a task queue (Celery, RQ).
+A page served from another address than your routes, such as a single-page app at `https://app.shop.example.com` asking an API at `https://api.shop.example.com`, names your routes in full and sends its user in a header, as a browser sends no cookie to another address:
+
+```js
+const rt = await connect( { app: 's1500000007', endpoint: 'https://api.shop.example.com/api/realtime', headers: { Authorization: 'Bearer ' + token } } );
+```
+
+- **In WordPlus Cloud,** add the page address to the app, as every other ([its addresses](#its-addresses)).
+- **The user** comes from that header, `init_app( app, realtime, user=… )`, as the rest of your API finds it.
+- **CORS comes from Flask-CORS, not this package,** so a page never gets the header twice, which a browser refuses. For the page address alone:
+  - the address back exactly in `Access-Control-Allow-Origin`, with `Vary: Origin`
+  - `POST` for the routes and `GET` for the files, as a group call fetches its encryption worker from there, and the `OPTIONS` asked before them
+  - `Content-Type` and the headers the page sends (`Authorization` above)
+  - no `Access-Control-Allow-Credentials`, as the page sends no cookie
+- **The worker** at another address is one a browser never starts, so each tab of that page connects by itself.
+
+```python
+from flask import request
+from flask_cors import CORS   # pip install flask-cors
+
+CORS(app, resources={r"/api/realtime/*": {"origins": ["https://app.shop.example.com"], "methods": ["GET", "POST"], "allow_headers": ["Content-Type", "Authorization"], "max_age": 600}})
+wordplus_realtime.flask.init_app(app, realtime, user=lambda: user_of_token(request.headers.get("Authorization")))
+```
 
 ## Behind a proxy
 
 Wrap the app in the Werkzeug `ProxyFix`, and set `SESSION_COOKIE_SECURE = True`, as for any Flask app behind TLS: the realtime route uses the session.
+
+## Several servers
+
+Every Gunicorn worker on every server answers the realtime route, and an emit is an HTTPS request to WordPlus Cloud, done in the view. For many emits, or ones you do not want a request to wait on, send them from a task queue (Celery, RQ). Only moving keys on keeps a little state, the key generations, in a store they share ([encryption](encryption.md#when-someone-loses-access)).
 
 ## Content Security Policy
 

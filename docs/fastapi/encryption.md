@@ -13,9 +13,17 @@ What your app sends through WordPlus Cloud is sealed on the way: the realtime se
 | Events your server sends a user (`to_user`) | the key of the user | the pages of that user |
 | What the people in a call see of each other | the day key | everyone your app knows |
 | Your users in the directory | the day key | everyone your app knows |
-| The media of a call | a key for that call | its people |
+| The media of a call between two people, and of a group call encrypted end to end | a key for that call | its people |
 
 A room declared `public=True` is not sealed, and neither is one with `seal=False`. The realtime servers see room names, event names, user ids, which key a value needs, and sealed values. They never hold a key.
+
+## Calls and live streams
+
+- **A call between two people** is encrypted end to end on every path: direct between the two, through our relays, or through our media servers.
+- **A group call** is encrypted end to end when it comes from a call, as someone is added, or when its rule says `encrypt=True` ([permissions](https://docs.wordplus.cloud/apps/permissions/#group-calls)).
+- **A live stream** is not encrypted end to end: its picture and its chat are for everyone watching, so they are encrypted on the way, and the media servers see them.
+
+An encrypted call is encrypted in the browser, with a key your server makes from its local key and gives only to the people in the call: our relays and media servers carry what they cannot read.
 
 ## Your local key
 
@@ -49,6 +57,10 @@ realtime.rotate_user(user_id)             # their own key moves on
 
 Those still let in get the new key from your server with the next event, and keep the old ones for the history before it.
 
+## Signing out
+
+A single-page app calls `rt.close()` when its user signs out, before another user signs in on the same page: it closes the connection and forgets the keys of the page.
+
 ## Your users
 
 A directory of your users, each profile sealed with the day key, that every page of your app reads. `profile` says what the profile of a user is:
@@ -69,8 +81,22 @@ const users = await rt.users( [ 34, 42 ] );   // { 34: { user_id: 34, name: 'Ann
 
 ## Your own sealed values
 
+A kind of key of your own is named after what it seals: `note:12` for note 12. A page that lacks the key asks your keys route, and a rule answers: a function your server declares once for the kind `note`, given the rest of the name, `12`. This rule says:
+
+1. **Visitors** who are not signed in get no key.
+2. **Those who may read the note** get its key, and nobody else.
+
 ```python
-realtime.kind("note", lambda rest, user, label: user is not None and may_read(user, rest))
+def may_have_note(rest, user):
+    # 1. Visitors get no key.
+    if user is None:
+        return False
+
+    # 2. Those who may read note 12, and nobody else.
+    return may_read(user, rest)
+
+realtime.kind("note", may_have_note)
+
 sealed = realtime.keys.seal_json(note_data, f"note:{note_id}")   # send it any way you like
 ```
 

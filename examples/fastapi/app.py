@@ -187,40 +187,9 @@ realtime.room("webhooks:{s}", lambda user, p: (person(user) or {}).get("shop") =
 # endregion
 
 
-# region demo: members
-# Calls between two people, support:34:42: the two it names, one of them staff. Either of them may bring more staff in,
-# and the call goes on as a group call: the one adding calls the staff member about it, who takes the call from them.
-def may_call(user, with_user, p):
-    pair = [int(p["a"]), int(p["b"])]
-    if not same_shop(user, with_user, *pair):
-        return False
-    if user in pair and with_user in pair:
-        return is_staff(user) or is_staff(with_user)
-    return (user in pair and is_staff(with_user)) or (is_staff(user) and with_user in pair)
-
-
-# Whom the call screen offers to add: the shop staff not in the call.
-realtime.calls("support:{a}:{b}", may_call, people=lambda user, call: [p["id"] for p in people_of(shop_of(user)) if p["staff"] and str(p["id"]) not in call.split(":")[1:]])
-# endregion
-
-# region demo: meeting
-# The daily meeting: a group call for everyone in the shop.
-realtime.group_calls("meeting:{id}", lambda user, p: (person(user) or {}).get("shop") == (0 if p["id"] == "daily" else int(p["id"])))
-# endregion
-
-
-# region demo: show
-def show_role(user, p):
-    """The shop live show, show:mugs: Ann presents it, and everyone else watches and writes in its chat, signed in or not."""
-    s = shop_of_room(f"show:{p['id']}")
-    if s is None or s not in SHOPS:
-        return False
-    me = person(user) or {}
-    return "host" if me.get("shop") == s and me.get("name") == "Ann" else "viewer"
-
-
-realtime.streams("show:{id}", show_role, reactions=True)
-# endregion
+# Calls, the daily meeting and the live show start from tokens of this app's own routes, below: GET /api/call-token,
+# /api/meeting-token and /api/show-token, each its own check, then realtime.call_token(), group_call_token() or
+# stream_token().
 
 
 # region demo: webhooks
@@ -271,19 +240,25 @@ app.mount("/static", StaticFiles(directory=HERE / "shop"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 
 
+def start_visitor(request: Request):
+    """A new visitor of a demo: a shop of their own, and they are its Ann, in the session. Her id."""
+    # The visitor address as the proxy in front saw it: the last of X-Forwarded-For, the one it added. The ones before
+    # it are whatever the visitor sent.
+    address = request.headers.get("x-forwarded-for", request.client.host if request.client else "local").split(",")[-1].strip()
+    for ended in [n for n, shop in SHOPS.items() if time.time() - shop["opened"] > demo.DAY]:
+        del SHOPS[ended]
+    s, new = demo.shop_for(address, SHOPS)
+    if new:
+        SHOPS[s] = open_shop(s)
+    request.session["user"] = s * 100 + 34
+    return s * 100 + 34
+
+
 @app.get("/login")
 def sign_in_page(request: Request):
     # A new visitor of a demo: a shop of their own, and they are its Ann.
     if demo.on():
-        # The visitor address as the proxy in front saw it: the last of X-Forwarded-For, the one it added. The ones
-        # before it are whatever the visitor sent.
-        address = request.headers.get("x-forwarded-for", request.client.host if request.client else "local").split(",")[-1].strip()
-        for ended in [n for n, shop in SHOPS.items() if time.time() - shop["opened"] > demo.DAY]:
-            del SHOPS[ended]
-        s, new = demo.shop_for(address, SHOPS)
-        if new:
-            SHOPS[s] = open_shop(s)
-        request.session["user"] = s * 100 + 34
+        start_visitor(request)
         return RedirectResponse("/", status_code=303)
     return templates.TemplateResponse(request, "login.html", {"people": people_of(0)})
 
@@ -307,6 +282,10 @@ def shop(request: Request, token: str | None = None):
     """The page: the user realtime settings (keys and identity included) and the shop data, rendered in. On a demo,
     /as/<token> is the page of the person of the token."""
     me = person(demo.user_of(token)) if token and demo.on() else person(current_user(request))
+    # A new visitor of a demo opening the start page gets their shop there and then, with no redirect to /login and
+    # back, which a search engine, keeping no cookie, would follow without end.
+    if me is None and token is None and demo.on():
+        me = person(start_visitor(request))
     if me is None:
         return RedirectResponse("/login", status_code=303)
     s = me["shop"]
@@ -317,13 +296,25 @@ def shop(request: Request, token: str | None = None):
         "order": order,
         "chat": {"between": [s * 100 + 34, s * 100 + 42]},
         "product": {"name": order["item"], "picture": "/static/products/mugs.webp"},
-        "routes": {"status": f"/orders/{order['id']}/status", "wire": f"/orders/{order['id']}/wire", "messages": "/chat/messages"},
+        "routes": {
+            "status": f"/orders/{order['id']}/status",
+            "wire": f"/orders/{order['id']}/wire",
+            "messages": "/chat/messages",
+            # The routes that start a call, the meeting and the show, each with the id of the shop's own.
+            "callToken": "/api/call-token",
+            "meetingToken": "/api/meeting-token?id=" + rooms_of(s)["meeting"].split(":", 1)[1],
+            "showToken": "/api/show-token?id=" + rooms_of(s)["show"].split(":", 1)[1],
+        },
         "rooms": rooms_of(s),
         "events": {"order": "updated", "chat": "message"},
         "headers": {},
         **({"demo": demo.frame("fastapi", me, people_of(s), SHOPS[s]["opened"])} if demo.on() else {}),
     }
-    return templates.TemplateResponse(request, "page.html", {"realtime_head": realtime.head(me["id"]), "shop": data, "me": me})
+    page = templates.TemplateResponse(request, "page.html", {"realtime_head": realtime.head(me["id"]), "shop": data, "me": me})
+    # No search engine keeps a window (noindex): each new shop has new tokens, so it would find new addresses without end.
+    if token:
+        page.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return page
 
 
 # region demo: order
@@ -364,4 +355,51 @@ def chat_messages(request: Request, before: str | None = None):
     if me is None or me["id"] % 100 not in (34, 42):
         return JSONResponse({"error": "not_in_chat"}, status_code=403)
     return chat_page(SHOPS[me["shop"]]["chat"], before)
+# endregion
+
+
+# region demo: members
+@app.get("/api/call-token")
+def call_token(request: Request, to: int | None = None, type: str | None = None):
+    """GET /api/call-token?to=34&type=video: a call between two people of a shop, asked by <call-button> and
+    <online-list> as a call button is pressed. The app's own check, then the token that lets this user call that one."""
+    me = current_user(request)
+
+    # Two people of the same shop, one of them staff: customers never call each other.
+    if me is None or person(to) is None or to == me or not same_shop(me, to) or not (is_staff(me) or is_staff(to)):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return {"token": realtime.call_token(me, to, type=type)}
+# endregion
+
+
+# region demo: meeting
+@app.get("/api/meeting-token")
+def meeting_token(request: Request, id: str = ""):
+    """GET /api/meeting-token?id=daily: the daily meeting of a shop, a group call, asked by <group-call-button> as it is
+    pressed. The name comes from the id: meeting:daily for the shop of the guides, meeting:7 for a demo shop."""
+    me = person(current_user(request))
+
+    # Everyone in the shop, and nobody else.
+    if me is None or me["shop"] != (0 if id == "daily" else int(id) if id.isdigit() else None):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return {"token": realtime.group_call_token(me["id"], f"meeting:{id}")}
+# endregion
+
+
+# region demo: show
+@app.get("/api/show-token")
+def show_token(request: Request, id: str = ""):
+    """GET /api/show-token?id=mugs: the live show of a shop, asked by <live-stream>, again as each ten-minute token runs
+    out. The name comes from the id: show:mugs for the shop of the guides, show:7 for a demo shop."""
+    me = person(current_user(request))
+    name = f"show:{id}"
+
+    # 1. A show of a shop here: any other is refused.
+    s = shop_of_room(name) if id else None
+    if s is None or s not in SHOPS:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    # 2. Ann of the shop presents it, and everyone else watches and writes in its chat, signed in or not.
+    host = me is not None and me["shop"] == s and me["name"] == "Ann"
+    return {"token": realtime.stream_token(me["id"] if me else None, name, **({"role": "host"} if host else {}), settings={"reactions": True})}
 # endregion

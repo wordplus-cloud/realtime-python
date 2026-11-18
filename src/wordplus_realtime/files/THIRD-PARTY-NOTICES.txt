@@ -1,4 +1,4 @@
-Third-party software in the scripts of @wordplus/realtime-client 1.0.46
+Third-party software in the scripts of @wordplus/realtime-client 1.0.87
 
 - @noble/ciphers 2.4.0 (MIT): in realtime.min.js
 - @socket.io/component-emitter 3.1.2 (MIT): in realtime-worker.js, realtime.min.js
@@ -6,7 +6,7 @@ Third-party software in the scripts of @wordplus/realtime-client 1.0.46
 - engine.io-parser 5.2.3 (MIT): in realtime-worker.js, realtime.min.js
 - socket.io-client 4.8.4 (MIT): in realtime-worker.js, realtime.min.js
 - socket.io-parser 4.2.4 (MIT): in realtime-worker.js, realtime.min.js
-- @wordplus/rtc-client 1.0.21 (Apache-2.0), a modified livekit-client 2.23.0, and what it bundles: realtime-rooms.min.js, realtime-rooms-e2ee.worker.js
+- @wordplus/rtc-client 1.0.27 (Apache-2.0), a modified livekit-client 2.23.0, and what it bundles: realtime-rooms.min.js, realtime-rooms-e2ee.worker.js
 
 ================================================================================
 @noble/ciphers 2.4.0 (MIT)
@@ -170,7 +170,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-@wordplus/rtc-client 1.0.21 (Apache-2.0): NOTICE
+@wordplus/rtc-client 1.0.27 (Apache-2.0): NOTICE
 ================================================================================
 
 Copyright 2021 LiveKit, Inc.
@@ -197,7 +197,7 @@ free place, and a leave that says whether the client will join again. The
 files it changed are listed in the patch it is built with.
 
 ================================================================================
-@wordplus/rtc-client 1.0.21 (Apache-2.0): LICENSE
+@wordplus/rtc-client 1.0.27 (Apache-2.0): LICENSE
 ================================================================================
 
 Apache License
@@ -376,10 +376,10 @@ Apache License
       of your accepting any such warranty or additional liability.
 
 ================================================================================
-@wordplus/rtc-client 1.0.21: what it bundles
+@wordplus/rtc-client 1.0.27: what it bundles
 ================================================================================
 
-Third-party notices for @wordplus/rtc-client 1.0.21
+Third-party notices for @wordplus/rtc-client 1.0.27
 ====================================================================================================
 
 WordPlus RTC client is a modified version of an Apache-2.0 client SDK: its notice, and what we changed, are in NOTICE,

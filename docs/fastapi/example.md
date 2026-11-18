@@ -8,8 +8,9 @@ A whole shop on FastAPI, in the package `examples/fastapi`: sign in as Ann (supp
 |---|---|
 | The order of Ben follows as Ann moves it on, and Ben alone gets a notice | the `order:{id}` [room](rooms.md), sent to by `POST /orders/{pk}/status` with `aemit()` and `except_tab`, and `to_user` ([sending](sending.md)) |
 | The chat of Ann and Ben, with typing, reactions and read ticks | `<chat-room>` on the `chat:{a}:{b}` room, which lets pages [send](events.md) them. The server keeps the conversation from the webhook and gives it back from `GET /chat/messages` ([keeping the conversation](events.md#keeping-the-conversation)). The name and picture of the other side above it from the [directory](encryption.md#your-users) |
-| Who is in the shop, with a call button for each | `<online-list>` on the `shop` [presence](presence.md) room, the name and role of each member |
-| The daily meeting | `<room-button>`, a [group call](calls.md) |
+| Who is in the shop, with a call button for each | `<online-list>` on the `shop` [presence](presence.md) room, the name and role of each member. Its call buttons, and those of the members, ask `GET /api/call-token`, a route of the app, which lets two people of the shop call when one of them is staff, and answers `realtime.call_token()` ([who may call](calls.md#who-may-call)) |
+| The daily meeting | `<group-call-button>`, a [group call](calls.md). It asks `GET /api/meeting-token?id=daily`, which lets in everyone of the shop with `realtime.group_call_token()` |
+| The live show | `<live-stream>`, a [live stream](streams.md) Ann presents and everyone else watches, with a token from `GET /api/show-token?id=mugs`: `realtime.stream_token()`, Ann the host |
 | The order timeline, and what the cloud carried of it | the order room [history](rooms.md#history-and-nothing-lost). `GET /orders/{pk}/wire` seals the update as the server sends it, with the room key ([encryption](encryption.md)) |
 | How many are looking at the mugs | the `product:{id}` room, public and [counted](presence.md#counting) |
 | The webhooks the server got | `realtime.on("*", …)`, which sends each on to the shop `webhooks` room ([webhooks](sending.md#webhooks)) |
@@ -31,7 +32,7 @@ Open it in two browsers (or a private window), sign in as Ann in one and Ben in 
 
 | File | |
 |---|---|
-| `app.py` | the realtime server part and its router, the rooms and calls it declares, sessions, signing in, the order route, and the page |
+| `app.py` | the realtime server part and its router, the rooms it declares, sessions, signing in, the order route, the routes that start a call, the daily meeting and the live show (each its own check, then a token), and the page |
 | `templates/page.html` | the page, with `realtime.head()`, the settings and the import map of the client, and the shop data through `tojson` |
 | `demo.py` | the demo part alone (`WORDPLUS_DEMO=1`), the same file in the three Python examples: a shop for each visitor, its windows, and the frame around the page |
-| `shop/shop.js` | the page script, served as it is with no Node and no bundler: `connect()`, the order, the product, the chat, who is in the shop, the webhooks, the meeting and the call screen. The same file runs the shop in every example |
+| `shop/shop.js` | the page script, served as it is with no Node and no bundler: `connect()`, the order, the product, the chat, who is in the shop, the webhooks, the meeting, the show and the call screen. The same file runs the shop in every example |

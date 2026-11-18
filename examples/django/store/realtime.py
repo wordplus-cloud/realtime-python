@@ -1,5 +1,6 @@
 """The shop realtime server part: its credentials from the environment, what others see of a user, and its rooms and
-calls and who may use them. Every rule checks the shop of the user (shops.py), so the people of one shop never reach another."""
+who may join them. Every rule checks the shop of the user (shops.py), so the people of one shop never reach another. Its
+calls, the meeting and the show start from tokens of the app's own routes (views.py)."""
 
 import os
 
@@ -69,46 +70,9 @@ realtime.room("webhooks:{s}", lambda user, p: user is not None and shop_of(user)
 # endregion
 
 
-# region demo: members
-# Calls between two people, support:34:42: the two it names, one of them staff. Either of them may bring more staff in,
-# and the call goes on as a group call: the one adding calls the staff member about it, who takes the call from them.
-def may_call(user, with_user, params):
-    pair = [int(params["a"]), int(params["b"])]
-    if not same_shop(user, with_user, *pair):
-        return False
-    if user in pair and with_user in pair:
-        return is_staff(user) or is_staff(with_user)
-    return (user in pair and is_staff(with_user)) or (is_staff(user) and with_user in pair)
-
-
-# Whom the call screen offers to add: the shop staff not in the call.
-def staff_to_add(user, call):
-    s = shop_of(user)
-    staff = get_user_model().objects.filter(is_staff=True, pk__gte=s * 100, pk__lt=s * 100 + 100)
-    return list(staff.exclude(pk__in=call.split(":")[1:]).values_list("pk", flat=True))
-
-
-realtime.calls("support:{a}:{b}", may_call, people=staff_to_add)
-# endregion
-
-# region demo: meeting
-# The daily meeting: a group call for everyone in the shop.
-realtime.group_calls("meeting:{id}", lambda user, p: Profile.objects.filter(user_id=user).exists() and shop_of(user) == (0 if p["id"] == "daily" else int(p["id"])))
-# endregion
-
-
-# region demo: show
-def show_role(user, p):
-    """The shop live show, show:mugs: Ann presents it, and everyone else watches and writes in its chat, signed in or not."""
-    s = shop_of_room(f"show:{p['id']}")
-    if s is None or not exists(s):
-        return False
-    ann = user is not None and shop_of(user) == s and get_user_model().objects.filter(pk=user, first_name="Ann").exists()
-    return "host" if ann else "viewer"
-
-
-realtime.streams("show:{id}", show_role, reactions=True)
-# endregion
+# Calls, the daily meeting and the live show start from tokens of the app's own routes (views.py): GET /api/call-token,
+# /api/meeting-token and /api/show-token, each its own check, then realtime.call_token(), group_call_token() or
+# stream_token().
 
 
 # region demo: webhooks

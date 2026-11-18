@@ -35,7 +35,7 @@ import warnings
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from .keys import MAX_LABELS, RESERVED, GenerationStore, Keys, UserId, base64url, day_of, dumps, unbase64url, valid_label
-from .patterns import Patterns, valid_room
+from .patterns import Patterns, has_pair, other_of, valid_room
 
 # The browser files the package carries, synced from @wordplus/realtime (its scripts/sync-files.mjs), with files.json:
 # their version, the folder they are served from, and each one's SHA-256.
@@ -51,7 +51,11 @@ def files_manifest() -> Dict[str, Any]:
             _manifest = json.load(f)
     return _manifest
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
+
+# Held for now: RECORDING_AVAILABLE is False until WordPlus Cloud serves the recordings routes for apps. While it is False a
+# group call's answer never says `record: True`, so no call screen offers Start Recording. Set it to True to turn it back on.
+RECORDING_AVAILABLE = False
 
 SERVER = "https://ws.wordplus.cloud"
 API_SERVER = "https://rest.wordplus.cloud"
@@ -70,14 +74,22 @@ CALL_KEY_LABEL = "wordplus-realtime call key v1"
 GRANT_KEY_LABEL = "easy-stream grant v1"
 GRANT_AUDIENCE = "easy-stream"
 # What a host does to someone else in a group call from its call screen: the calls route's ``moderate``.
-MODERATION_ACTS = ("mute", "speak", "listen", "remove")
+MODERATION_ACTS = ("mute", "speak", "listen", "remove", "spotlight", "unspotlight", "ban", "unban", "hold_mic", "release_mic", "rules", "ask", "end")
+# What a group call's screen may offer, as this package takes it (``acts`` in group_call_token()'s token and in the room's
+# answer): the call screen shows a control only for an act both this package and the realtime server name. ``hand`` is
+# raising hands, for everyone; the rest are a host's. Recording is not one of them.
+CALL_ACTS = ("remove", "ban", "listen", "speak", "mute", "hold_mic", "release_mic", "rules", "hand", "ask", "end", "spotlight")
+# The longest ban, in minutes: a week.
+BAN_MOST_MINUTES = 7 * 24 * 60
+# The cloud's refusals of a host's act that its call screen says in its own words; any other is ``server``.
+_PASSED_ON = ("spotlight_full", "forbidden", "asked_recently", "not_in_call", "bad_request")
 
-CLAIM_ORDER = ("iss", "aud", "str", "role", "sub", "name", "avatar", "chat", "mod", "src", "q", "stage", "offline", "links", "fresh", "people", "reactions", "org", "iat", "exp")
+CLAIM_ORDER = ("iss", "aud", "str", "role", "sub", "name", "avatar", "chat", "mod", "src", "q", "stage", "offline", "links", "fresh", "people", "reactions", "org", "iat", "ms", "exp")
 # A stream's grant lives ten minutes, as Easy Stream's do; the page asks for another as one runs out.
 STREAM_TTL = 600
 # A live stream's name: a room's without an underscore, as the cloud takes it in a grant's ``str``.
-_STREAM_NAME = re.compile(r"^[A-Za-z0-9\-=@,.;:]{1,128}$")
-_STREAM_USER = re.compile(r"^[\w.@-]{1,64}$", re.ASCII)
+_STREAM_NAME = re.compile(r"^[A-Za-z0-9\-=@,.;:]{1,128}\Z")
+_STREAM_USER = re.compile(r"^[\w.@-]{1,64}\Z", re.ASCII)
 
 AUDIENCE = "wordplus-realtime"
 CALL_AUDIENCE = "wordplus-realtime call"
@@ -170,6 +182,13 @@ def stream_grant(claims: Dict[str, Any], key: bytes) -> str:
     return _jwt({name: claims[name] for name in CLAIM_ORDER if claims.get(name) is not None}, key)
 
 
+def _ms_within(now: int) -> int:
+    """`ms`, as a room token has it: when a token was signed to the millisecond, for one signed in the same second as a
+    removal. Only within `iat`, as a clock given to the constructor, or the second turning just now, may say another."""
+    ms = int(time.time() * 1000)
+    return ms if ms // 1000 == now else now * 1000
+
+
 def _flexible(fn: Callable[..., Any]) -> Callable[..., Any]:
     """A callback called with as many of its arguments as it takes, as JavaScript and PHP call theirs."""
     try:
@@ -182,6 +201,30 @@ def _flexible(fn: Callable[..., Any]) -> Callable[..., Any]:
     return lambda *args: fn(*args[:count])
 
 
+def _pair_room_rule(rule: Optional[Callable[..., Any]]) -> Callable[..., Any]:
+    """The rule of a ``{pair}`` room: the two in its name and nobody else, then the app's own rule if it has one, told who
+    the other is."""
+
+    def asked(user: Any, params: Dict[str, str], room: str) -> Any:
+        other = other_of(params["pair"], user)
+        if other is None:
+            return False
+        return True if rule is None else rule(user, {**params, "other": other}, room)
+
+    return asked
+
+
+def _pair_call_rule(rule: Optional[Callable[..., Any]]) -> Callable[..., Any]:
+    """The rule of a ``{pair}`` call: both of the two in its name and nobody else, then the app's own rule if it has one."""
+
+    def asked(user: Any, with_user: Any, params: Dict[str, str], call: str, side: Dict[str, str]) -> Any:
+        if other_of(params["pair"], user) != str(with_user):
+            return False
+        return True if rule is None else rule(user, with_user, params, call, side)
+
+    return asked
+
+
 def _names(value: Any) -> Union[str, List[str]]:
     """Event names a room's option lists: '*', or names."""
     if value == "*":
@@ -189,10 +232,11 @@ def _names(value: Any) -> Union[str, List[str]]:
     return [str(name) for name in value] if isinstance(value, (list, tuple)) else []
 
 
-def _days(value: Any) -> float:
-    """How long a room keeps its history in days, a part of one as given, held to the cloud's limit, and the limit when not above 0."""
+def _days(given: Dict[str, Any]) -> float:
+    """How long a room keeps its history as its token carries it, a part of a day, from its ``seconds`` or the ``days`` first
+    written, held to the cloud's limit, and the limit when not above 0."""
     try:
-        days = float(value)
+        days = float(given["seconds"]) / 86400 if given.get("seconds") is not None else float(given.get("days"))
     except (TypeError, ValueError):
         return MAX_HISTORY_DAYS
     return min(days, MAX_HISTORY_DAYS) if days > 0 else MAX_HISTORY_DAYS
@@ -202,10 +246,10 @@ def _normalized(options: Dict[str, Any]) -> Dict[str, Any]:
     """A room's options as its rule gave them, with their defaults and the cloud's limits."""
     given = options.get("history")
     history = None
-    if isinstance(given, int) and not isinstance(given, bool) and given > 0:
-        history = {"last": min(given, MAX_HISTORY), "days": MAX_HISTORY_DAYS}
+    if isinstance(given, (int, float)) and not isinstance(given, bool) and given > 0:
+        history = {"last": min(int(given), MAX_HISTORY), "days": MAX_HISTORY_DAYS}
     elif isinstance(given, dict) and int(given.get("last") or 0) > 0:
-        history = {"last": min(int(given["last"]), MAX_HISTORY), "days": _days(given.get("days"))}
+        history = {"last": min(int(given["last"]), MAX_HISTORY), "days": _days(given)}
     public = bool(options.get("public"))
     seal = options.get("seal")
     return {
@@ -273,6 +317,30 @@ def _header(headers: Any, name: str) -> str:
     return "" if value is None else str(value)
 
 
+class EveryoneEmitter:
+    """An emit to everyone, and a tab that doesn't get it back. ``emit()`` sends it."""
+
+    def __init__(self, realtime: "Realtime") -> None:
+        self._realtime = realtime
+        self._skip: Optional[str] = None
+
+    def except_tab(self, tab: Optional[str]) -> "EveryoneEmitter":
+        """The tab whose action made the event (the browser's ``rt.tab``, sent as X-Realtime-Tab), which doesn't get it
+        back."""
+        if tab:
+            self._skip = str(tab)
+        return self
+
+    def emit(self, event: str, data: Any = None) -> None:
+        """Sends the event to every page and app connected now, never sealed or kept. Raises RealtimeError with the
+        server's reason."""
+        self._realtime.emit_event({"everyone": True, "event": event, "data": data, "except": self._skip})
+
+    async def aemit(self, event: str, data: Any = None) -> None:
+        """emit(), from async code (FastAPI, Starlette, Django's async views), on a worker thread."""
+        await asyncio.to_thread(self.emit, event, data)
+
+
 class Emitter:
     """Where an emit goes: rooms and users, and a tab that doesn't get it back. ``emit()`` sends it."""
 
@@ -301,10 +369,10 @@ class Emitter:
             self._skip = str(tab)
         return self
 
-    def emit(self, event: str, data: Any = None, *, seal: bool = True) -> Dict[str, str]:
+    def emit(self, event: str, data: Any = None, *, seal: bool = True, except_tab: Optional[str] = None) -> Dict[str, str]:
         """Sends the event: a sealed room's data sealed with its key, a user's with theirs, kept where a room's rule keeps
         history. The kept events' ids, by room. Raises RealtimeError with the server's reason."""
-        return self._realtime.emit_event({"rooms": self._rooms, "users": self._users, "event": event, "data": data, "except": self._skip, "seal": seal})
+        return self._realtime.emit_event({"rooms": self._rooms, "users": self._users, "event": event, "data": data, "except": except_tab or self._skip, "seal": seal})
 
     async def aemit(self, event: str, data: Any = None, *, seal: bool = True) -> Dict[str, str]:
         """emit(), from async code (FastAPI, Starlette, Django's async views), on a worker thread."""
@@ -324,7 +392,8 @@ class RoomQueries:
         return int(self._realtime.request("GET", self._path).get("count") or 0)
 
     def members(self) -> Dict[str, Any]:
-        """A presence room's members, their info opened: the first 1,000, the count, and ``next`` to page on."""
+        """A presence room's members, their info opened: the first 1,000 and the count. ``next`` comes with a room of more,
+        and no route of this API takes it back: a page reads on from its own ``room.members`` as people join and leave."""
         answer = self._realtime.request("GET", self._path + "?members=1")
         members = dict(answer["members"]) if isinstance(answer.get("members"), dict) else {"count": 0, "list": []}
         members["count"] = int(members.get("count") or 0)
@@ -351,15 +420,43 @@ class RoomQueries:
         path = self._path + "/history" + ("" if event_id is None else "?id=" + urllib.parse.quote(event_id, safe=""))
         return int(self._realtime.request("DELETE", path).get("deleted") or 0)
 
-    def kick(self, user: UserId) -> None:
+    def emit(self, event: str, data: Any = None, *, seal: bool = True, except_tab: Optional[str] = None) -> Dict[str, str]:
+        """Sends to the room, as ``to(room).emit()`` does: the kept event ids, by room."""
+        return self._realtime.to(self.room).emit(event, data, seal=seal, except_tab=except_tab)
+
+    def remove(self, user: UserId) -> None:
         """Takes a user out of the room at once, refuses their tokens signed before, and moves the room's key on when
-        keys have generations."""
-        self._realtime.request("POST", self._path + "/kick", {"user": str(user)})
+        keys have generations. A reload asks the room's rule again, so to keep them out, the rule says no for them too."""
+        self._about("/kick", {"user": str(user)})
+
+    def remove_everyone(self) -> None:
+        """Takes everyone out of the room at once, on every server, each page hearing ``kicked``, as ``remove()`` does for
+        one. Those your rule still lets in can join again, so to close the room, have the rule say no first. A public room
+        takes anyone back, as it always does."""
+        self._about("/kick", {"everyone": True})
+
+    def recheck(self, user: UserId) -> None:
+        """Asks the room's rule again for a user, in this room alone: their pages leave it and ask your server again by
+        themselves, and come back with what the rule answers now, or hear why not. For a role that changed, such as a
+        member made a reader. The others in the room see them leave and join again. Their other rooms and calls are left
+        alone."""
+        self._about("/recheck", {"user": str(user)})
+
+    def recheck_everyone(self) -> None:
+        """``recheck()`` for everyone in the room, for a rule whose answer changed for all of them."""
+        self._about("/recheck", {"everyone": True})
+
+    def _about(self, action: str, who: Dict[str, Any]) -> None:
+        self._realtime.request("POST", self._path + action, who)
         try:
             self._realtime.rotate_room(self.room)
         except RuntimeError:
-            # No generation store: the kick holds, and what the room carries next is still sealed with the key they had.
+            # No generation store: it holds, and what the room carries next is still sealed with the key they had.
             pass
+
+    def kick(self, user: UserId) -> None:
+        """Deprecated: ``remove()``."""
+        self.remove(user)
 
 
 class OnlineQueries:
@@ -408,6 +505,10 @@ class UserQueries:
         """Online, or offline since ``at``, and how many connections vouched for them are open."""
         return dict(self._realtime.request("GET", self._path).get("user") or {})
 
+    def emit(self, event: str, data: Any = None, *, seal: bool = True, except_tab: Optional[str] = None) -> Dict[str, str]:
+        """Sends to every connection they have open, as ``to_user(id).emit()`` does: a page hears it with ``rt.on( event )``."""
+        return self._realtime.to_user(self.id).emit(event, data, seal=seal, except_tab=except_tab)
+
     def disconnect(self) -> None:
         """Takes the user out of everything at once: every room, their identity, their lines, group calls and live streams
         (a host stays). Their pages then ask your routes again, and the tokens signed before are refused, so your rules
@@ -426,6 +527,11 @@ class UserQueries:
             body["all"] = True
         answer = self._realtime.request("POST", self._path + "/ask", body)
         return [{"data": self._realtime.opened(r.get("data")), "at": int(r.get("at") or 0)} for r in answer.get("replies") or [] if isinstance(r, dict)]
+
+    async def aask(self, event: str, data: Any = None, *, timeout: Optional[int] = None, all: bool = False, seal: bool = True) -> List[Dict[str, Any]]:
+        """ask(), from async code (FastAPI, Starlette, Django's async views), on a worker thread: it waits up to ``timeout``
+        for a page, and the event loop goes on serving others meanwhile."""
+        return await asyncio.to_thread(self.ask, event, data, timeout=timeout, all=all, seal=seal)
 
 
 class WebhookQueries:
@@ -448,6 +554,41 @@ class WebhookQueries:
         return _outcome(self._realtime.request("POST", "/wordplus/realtime/webhooks/test"))
 
 
+class RecordingQueries:
+    """Recordings of the app's group calls and live streams, made by WordPlus Cloud with their transcripts
+    (``/wordplus/realtime/recordings/*``). The files wait in WordPlus Cloud's landing bucket, linked from each recording,
+    seven days at most: take them where the app keeps its files, then acknowledge them with sync()."""
+
+    _PATH = "/wordplus/realtime/recordings/"
+
+    def __init__(self, realtime: "Realtime") -> None:
+        self._realtime = realtime
+
+    def start(self, *, call: Optional[str] = None, stream: Optional[str] = None, type: str = "video", by: Optional[UserId] = None,
+              meta: Optional[str] = None, settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Starts recording a group call (``call``, its name) or a live stream (``stream``). ``meta`` comes back with it,
+        1 KB at most, ``by`` fills it with who started it, and ``settings`` change how it looks (the realtime server's
+        defaults where left out). Its ``id`` and ``state``."""
+        body: Dict[str, Any] = {"product": "stream", "stream": stream} if stream is not None else {"product": "call", "room": call, "type": type}
+        body["meta"] = meta if meta is not None else (json.dumps({"by": str(by)}, separators=(",", ":")) if by is not None else "")
+        if settings is not None:
+            body["settings"] = settings
+        return dict(self._realtime.request("POST", self._PATH + "start", body).get("recording") or {})
+
+    def stop(self, recording_id: str) -> str:
+        """Stops one: its files are ready about half a minute later. Its state, ``stopping``."""
+        return str(self._realtime.request("POST", self._PATH + "stop", {"recording": recording_id}).get("state") or "")
+
+    def get(self, recording_id: str) -> Dict[str, Any]:
+        """One recording now: its ``state`` (``recording``, ``stopping``, ``finishing``, ``complete``, ``failed`` with a
+        ``reason``), its ``seconds``, and once complete its ``files``, each linked for a day."""
+        return dict(self._realtime.request("POST", self._PATH + "status", {"recording": recording_id}).get("recording") or {})
+
+    def sync(self, ack: Optional[List[str]] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        """The recordings finished since the last acknowledged, each until ``ack`` names it."""
+        return list(self._realtime.request("POST", self._PATH + "sync", {"ack": list(ack or []), "limit": limit}).get("recordings") or [])
+
+
 class CallQueries:
     """A group call as the media server holds it."""
 
@@ -457,33 +598,148 @@ class CallQueries:
         self._path = "/wordplus/realtime/calls/" + urllib.parse.quote(name, safe="")
 
     def get(self) -> Dict[str, Any]:
-        """Its people and what each sends now (``camera``, ``microphone``, ``screen``). With nobody in it, ``people`` is 0,
-        ``started_at`` None and ``list`` empty."""
+        """Its people and what each sends now (``camera``, ``microphone``, ``screen``), with what the call holds of each
+        (``held``: ``publish``, ``mic``), its ``rules`` and the users with a hand up (``hands``). With nobody in it,
+        ``people`` is 0, ``started_at`` None and ``list`` empty."""
         return dict(self._realtime.request("GET", self._path).get("call") or {})
 
-    def mute(self, user: UserId, track: str) -> bool:
-        """Turns the ``microphone``, ``camera`` or ``screen`` of someone off. They may turn it on again. Whether it was on."""
-        return bool(self._realtime.request("POST", self._path + "/mute", {"user": str(user), "track": track}).get("muted"))
+    def mute(self, user: UserId, track: str = "microphone", *, hold: Optional[bool] = None, by: Optional[UserId] = None) -> bool:
+        """Turns someone's microphone off, or their ``camera`` or ``screen``, once: they may turn it on again. With ``hold``
+        (a microphone only, the call screen's Mute Microphone) the call keeps it off until ``unmute()`` or the call ends,
+        through a reload and a token signed later too. ``by``, the host it is done for, is named in the
+        ``call.moderated`` webhook. Whether it was on."""
+        body = {"user": str(user), "track": track, **_acted(hold=hold, by=by)}
+        return bool(self._realtime.request("POST", self._path + "/mute", body).get("muted"))
 
-    def remove(self, user: UserId) -> bool:
-        """Takes someone out now. Their tokens signed before do not take them back in. Whether they were in it."""
-        return bool(self._realtime.request("POST", self._path + "/remove", {"user": str(user)}).get("removed"))
+    def unmute(self, user: UserId, *, by: Optional[UserId] = None) -> bool:
+        """Lets go of a microphone held off (``mute(user, "microphone", hold=True)``, or Mute Everyone): they may turn it
+        on again, until the next Mute Everyone. Whether they are in the call now."""
+        return bool(self._realtime.request("POST", self._path + "/unmute", {"user": str(user), **_acted(by=by)}).get("changed"))
 
-    def permit(self, user: UserId, *, publish: Optional[bool] = None, subscribe: Optional[bool] = None) -> bool:
+    def remove(self, user: UserId, *, by: Optional[UserId] = None) -> bool:
+        """Takes someone out now, a kick: their tokens signed before do not take them back in, and one your server signs
+        after does, unless the call is locked, which keeps them out. Whether they were in it."""
+        return bool(self._realtime.request("POST", self._path + "/remove", {"user": str(user), **_acted(by=by)}).get("removed"))
+
+    def ban(self, user: UserId, *, minutes: Optional[int] = None, by: Optional[UserId] = None) -> Dict[str, Any]:
+        """Takes someone out and keeps them out, whatever token they bring, for ``minutes`` (at most a week), or until the
+        call ends when left out: their join is refused ``banned``. A host's place is never banned (``forbidden``). Whether
+        they were in it, and until when the ban holds (milliseconds), None until the call ends: ``{"removed", "until"}``."""
+        answer = self._realtime.request("POST", self._path + "/ban", {"user": str(user), **_acted(minutes=minutes, by=by)})
+        until = answer.get("until")
+        return {"removed": bool(answer.get("removed")), "until": None if until is None else int(until)}
+
+    def unban(self, user: UserId, *, by: Optional[UserId] = None) -> bool:
+        """Lets someone banned in again. Whether they were banned."""
+        return bool(self._realtime.request("POST", self._path + "/unban", {"user": str(user), **_acted(by=by)}).get("unbanned"))
+
+    def bans(self) -> List[Dict[str, Any]]:
+        """Who is banned from it now, and until when (milliseconds), None until the call ends: ``[{"user", "until"}]``."""
+        return list(self._realtime.request("GET", self._path + "/bans").get("bans") or [])
+
+    def permit(self, user: UserId, *, publish: Optional[bool] = None, subscribe: Optional[bool] = None, hold: Optional[bool] = None, by: Optional[UserId] = None) -> bool:
         """Changes what someone may do while it runs: ``publish`` to make a listener a speaker or a speaker a listener
         again, which stops what they send, ``subscribe`` to stop or start getting the others. At once for them when they
         are in it, and their page hears ``permissions``. Their tokens signed before follow it too. Your rule decides every
-        join after, so keep it there as well. Whether they were in it."""
+        join after, so keep it there as well, and a ``publish`` held before goes. With ``hold`` (the call screen's Make
+        Listener) ``publish`` holds for every join after too, until the other one, a mode switch or the call ends. Whether
+        they were in it."""
         body: Dict[str, Any] = {"user": str(user)}
         if publish is not None:
             body["publish"] = bool(publish)
         if subscribe is not None:
             body["subscribe"] = bool(subscribe)
+        body.update(_acted(hold=hold, by=by))
         return bool(self._realtime.request("POST", self._path + "/permit", body).get("changed"))
 
-    def end(self) -> None:
-        """Ends it for everyone. Tokens signed before do not open it again."""
-        self._realtime.request("POST", self._path + "/end")
+    def rules(self, *, mode: Optional[str] = None, locked: Optional[bool] = None, muted: Optional[bool] = None, by: Optional[UserId] = None) -> Dict[str, Any]:
+        """Sets the call's rules, any of them, which hold until the call empties or ends: ``mode`` ``broadcast`` (only hosts
+        send, and those promoted with ``permit(user, publish=True, hold=True)``) or ``participatory``, ``locked`` (only
+        those already in get back in) and ``muted`` (Mute Everyone: every microphone but a host's held off). A mode switch
+        lets go of every held ``publish``, and Mute or Unmute Everyone of every held microphone. The rules now:
+        ``{"mode", "locked", "muted"}``."""
+        change = {k: v for k, v in (("mode", mode), ("locked", locked), ("muted", muted)) if v is not None}
+        return dict(self._realtime.request("POST", self._path + "/rules", {**change, **_acted(by=by)}).get("rules") or {})
+
+    def hand(self, user: UserId, up: bool) -> bool:
+        """Raises or lowers someone's hand, kept until lowered or they leave. Whether it changed."""
+        return bool(self._realtime.request("POST", self._path + "/hand", {"user": str(user), "up": bool(up)}).get("changed"))
+
+    def lower_hands(self, *, by: Optional[UserId] = None) -> int:
+        """Lowers every hand. How many were up."""
+        body = _acted(by=by)
+        return int(self._realtime.request("POST", self._path + "/hands/lower", body or None).get("lowered") or 0)
+
+    def ask(self, user: UserId, devices: List[str], by: UserId) -> Dict[str, Any]:
+        """Asks someone in it to turn on their camera or microphone, for ``by``, who asks: their page hears it, and answers
+        ``by`` alone. Nothing is kept. The same ask again within 30 s is refused ``asked_recently``, and someone not in the
+        call ``not_in_call``. The ask's id and the devices asked: ``{"id", "devices"}``."""
+        answer = self._realtime.request("POST", self._path + "/ask", {"user": str(user), "devices": list(devices), "by": str(by)})
+        return {"id": str(answer.get("id") or ""), "devices": list(answer.get("devices") or [])}
+
+    def let_speak(self, user: UserId) -> bool:
+        """Lets a listener speak, as a host does on the page: ``permit(user, publish=True)``."""
+        return self.permit(user, publish=True)
+
+    def make_listener(self, user: UserId) -> bool:
+        """Makes a speaker a listener again, which stops what they send: ``permit(user, publish=False)``."""
+        return self.permit(user, publish=False)
+
+    def spotlight_on(self, user: UserId) -> bool:
+        """Puts someone on the main tiles for everyone in it, as a host does on the page."""
+        return self.spotlight(user, True)
+
+    def spotlight_off(self, user: Optional[UserId] = None) -> bool:
+        """Takes someone off the main tiles, or everyone with no user."""
+        return self.spotlight(user, False)
+
+    def spotlight(self, user: Optional[UserId], on: bool) -> bool:
+        """Puts someone on the main tiles for everyone in it (``on``), up to four (a fifth is refused ``spotlight_full``),
+        or takes them off, or everyone with ``user`` None. The room keeps it: a page that joins later sees it too, and
+        every page in it hears ``spotlight``. Whether it changed anything."""
+        body: Dict[str, Any] = {"on": bool(on)} if user is None else {"user": str(user), "on": bool(on)}
+        return bool(self._realtime.request("POST", self._path + "/spotlight", body).get("changed"))
+
+    def end(self, *, by: Optional[UserId] = None) -> None:
+        """Ends it for everyone. Tokens signed before do not open it again, and what it held goes: its rules, hands, held
+        acts and the bans until it ends. A ban given minutes lasts its minutes. A join after it starts a new call."""
+        body = _acted(by=by)
+        if body:
+            self._realtime.request("POST", self._path + "/end", body)
+        else:
+            self._realtime.request("POST", self._path + "/end")
+
+
+def _acted(hold: Optional[bool] = None, minutes: Optional[int] = None, by: Optional[UserId] = None) -> Dict[str, Any]:
+    """A host act's ``hold``, ``minutes`` and ``by``, each only when given, so a call without them sends what 1.0 sent."""
+    body: Dict[str, Any] = {}
+    if hold is not None:
+        body["hold"] = bool(hold)
+    if minutes is not None:
+        body["minutes"] = minutes
+    if by is not None:
+        body["by"] = str(by)
+    return body
+
+
+def _asked_devices(devices: Any) -> Optional[List[str]]:
+    """An ask's devices, each once: ``camera``, ``microphone`` or both; None for anything else."""
+    if not isinstance(devices, list) or not devices or len(devices) > 2:
+        return None
+    if any(d not in ("camera", "microphone") for d in devices) or len(set(devices)) != len(devices):
+        return None
+    return devices
+
+
+def _rules_change(rules: Any) -> Optional[Dict[str, Any]]:
+    """A change of a call's rules: at least one of ``mode``, ``locked`` and ``muted``, and nothing else; None for anything else."""
+    if not isinstance(rules, dict) or not rules or set(rules) - {"mode", "locked", "muted"}:
+        return None
+    if "mode" in rules and rules["mode"] not in ("broadcast", "participatory"):
+        return None
+    if any(flag in rules and not isinstance(rules[flag], bool) for flag in ("locked", "muted")):
+        return None
+    return dict(rules)
 
 
 class StreamQueries:
@@ -538,9 +794,13 @@ class StreamQueries:
         """Lifts a timeout. Whether there was one."""
         return bool(self._realtime.request("POST", self._path + "/untimeout", {"user": str(user)}).get("lifted"))
 
-    def kick(self, user: UserId) -> None:
+    def remove(self, user: UserId) -> None:
         """Out of the stream now, free to come back. Raises ``host`` for a host."""
         self._realtime.request("POST", self._path + "/kick", {"user": str(user)})
+
+    def kick(self, user: UserId) -> None:
+        """The same as ``remove()``."""
+        self.remove(user)
 
     def ban(self, user: UserId) -> None:
         """Out of the stream until it is lifted. Raises ``host`` for a host."""
@@ -563,13 +823,38 @@ class StreamQueries:
         return dict(self._realtime.request("POST", self._path + "/end").get("stream") or {})
 
 
+class AsyncRealtime:
+    """``realtime.aio``: the same names, awaited. What names a room, a user, a call or a stream only names it, as
+    ``realtime.aio.room("chat:7")``, and what goes to the realtime server runs on a worker thread as you await it."""
+
+    _NAMING = frozenset({"to", "to_user", "to_everyone", "except_tab", "room", "user", "call", "stream"})
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._target, name)
+        if isinstance(value, (OnlineQueries, WebhookQueries, RecordingQueries)):
+            return AsyncRealtime(value)
+        if not callable(value):
+            return value
+        if name in self._NAMING:
+            return lambda *args, **options: AsyncRealtime(value(*args, **options))
+
+        async def run(*args: Any, **options: Any) -> Any:
+            return await asyncio.to_thread(value, *args, **options)
+
+        return run
+
+
 class Realtime:
     def __init__(
         self,
-        site: str,
-        secret: str,
-        local_key: str,
+        app: Optional[str] = None,
+        secret: str = "",
+        local_key: str = "",
         *,
+        site: Optional[str] = None,
         profile: Optional[Callable[[UserId], Optional[Dict[str, Any]]]] = None,
         has_keys: Optional[Callable[[UserId], bool]] = None,
         hidden: Optional[Callable[[UserId], bool]] = None,
@@ -591,8 +876,9 @@ class Realtime:
         check_keys: bool = True,
     ) -> None:
         # The keys are checked now, or with check_keys=False when first used: a request, a token or an emit. Then a
-        # framework's commands (Django's manage.py, collectstatic in a build) run before the keys are set.
-        self.site = site
+        # framework's commands (Django's manage.py, collectstatic in a build) run before the keys are set. `app` is the
+        # app's key, `site` the same in its old word.
+        self.site = (app if app is not None else site) or ""
         self._secret_text = secret
         self._local_key = local_key
         self._generations = generations
@@ -626,11 +912,17 @@ class Realtime:
         self._fallback: Optional[Dict[str, Callable[..., Any]]] = None
         self._public_grant: Any = None
         self._warned_user = False
+        self._warned_no_rule: set = set()
+
+    @property
+    def app(self) -> str:
+        """The app's key: public, as every page carries it."""
+        return self.site
 
     @property
     def _secret(self) -> bytes:
         if not self.site or not self._secret_text:
-            raise ValueError("wordplus-realtime: site and secret are required (WORDPLUS_SITE, WORDPLUS_SECRET)")
+            raise ValueError("wordplus-realtime: the app key and secret are required: WORDPLUS_SITE and WORDPLUS_SECRET in the environment, or `app` and `secret`")
         return self._secret_text.encode("utf-8")
 
     @property
@@ -643,12 +935,15 @@ class Realtime:
 
     @classmethod
     def from_environment(cls, **options: Any) -> "Realtime":
-        """From WORDPLUS_SITE, WORDPLUS_SECRET and WORDPLUS_LOCAL_KEY in the environment, with the other options given,
-        and WORDPLUS_REALTIME_SERVER and WORDPLUS_REALTIME_API when it sets them and the options don't."""
+        """From WORDPLUS_SITE, WORDPLUS_SECRET and WORDPLUS_LOCAL_KEY in the environment, with the other options given, those
+        three too, and WORDPLUS_REALTIME_SERVER and WORDPLUS_REALTIME_API when it sets them and the options don't."""
         for name, env in (("server", "WORDPLUS_REALTIME_SERVER"), ("api", "WORDPLUS_REALTIME_API")):
             if os.environ.get(env) and name not in options:
                 options[name] = os.environ[env]
-        return cls(os.environ.get("WORDPLUS_SITE", ""), os.environ.get("WORDPLUS_SECRET", ""), os.environ.get("WORDPLUS_LOCAL_KEY", ""), **options)
+        app = options.pop("app", None) or options.pop("site", None) or os.environ.get("WORDPLUS_SITE", "")
+        secret = options.pop("secret", None) or os.environ.get("WORDPLUS_SECRET", "")
+        local_key = options.pop("local_key", None) or os.environ.get("WORDPLUS_LOCAL_KEY", "")
+        return cls(app, secret, local_key, **options)
 
     # Rules.
 
@@ -664,19 +959,33 @@ class Realtime:
         webhook: Union[None, str, List[str]] = None,
         public: bool = False,
         seal: Optional[bool] = None,
-    ) -> "Realtime":
+    ) -> Union["Realtime", RoomQueries]:
         """Rooms the app owns, by pattern (``order:{id}``), who may join, and what they are: ``rule(user, params, room)``
         answers False, True, or ``{"info": …, "emit": …, "readOnly": …}`` for that user. ``presence`` lists its members,
-        ``count`` counts them, ``history`` keeps its last events (a number, or ``{"last", "days"}``), ``emit`` and
+        ``count`` counts them, ``history`` keeps its last events (a number, or ``{"last", "seconds"}``), ``emit`` and
         ``webhook`` name the events a browser may send to it and those sent here ('*' for any), ``public`` lets anyone
         in, unsealed, and ``seal`` says otherwise. A public room may have no rule. The rule with the most characters of
-        its own decides."""
-        if not public and rule is None:
+        its own decides.
+
+        ``chat:{pair}`` is a room of the two people its name holds, ``chat:34:42``, and nobody else: it needs no rule, and
+        a rule it has is asked only about those two, with ``other`` the other one among its params.
+
+        With only a name, ``room("chat:7")``, it is that one room as the realtime server holds it: its members, count and
+        history, sending to it, and taking someone out of it."""
+        given = presence or count or public or history is not None or emit is not None or webhook is not None or seal is not None
+        if rule is None and not given and "{" not in pattern:
+            return RoomQueries(self, pattern)
+
+        pair = has_pair(pattern)
+        if not public and rule is None and not pair:
             raise ValueError("wordplus-realtime: room %r needs a rule, or `public`" % (pattern,))
         if presence and public:
             raise ValueError("wordplus-realtime: a public room has no members to list; take `presence` off %r" % (pattern,))
+        if pair and public:
+            raise ValueError("wordplus-realtime: a public room is for anyone, not two people; take `{pair}` off %r" % (pattern,))
         options = _normalized({"presence": presence, "count": count, "history": history, "emit": emit, "webhook": webhook, "public": public, "seal": seal})
-        self._rules.add(pattern, {"options": options, "rule": None if rule is None else _flexible(rule)})
+        own = None if rule is None else _flexible(rule)
+        self._rules.add(pattern, {"options": options, "rule": _pair_room_rule(own) if pair else own})
         self._public_grant = None
         return self
 
@@ -687,7 +996,7 @@ class Realtime:
         self._fallback = None if rule is None else {"rule": _flexible(rule), "options": options or (lambda room: {})}
         return self
 
-    def calls(self, pattern: str, rule: Callable[..., Any], *, people: Optional[Callable[..., Iterable[UserId]]] = None) -> "Realtime":
+    def calls(self, pattern: str, rule: Optional[Callable[..., Any]] = None, *, people: Optional[Callable[..., Iterable[UserId]]] = None) -> "Realtime":
         """Calls between two people the app owns, by pattern (``support:{a}:{b}``): ``rule(user, with_user, params, call,
         side)`` answers False, True, or ``{"info", "publish", "subscribe", "admin", "hidden"}``. It is asked as the caller
         places the call (``side["role"]`` ``"caller"``) and again as the callee answers (``"callee"``), so a rule may let
@@ -696,13 +1005,25 @@ class Realtime:
         A call becomes a group call when either of its people adds someone, which the rule decides as for any call: the
         user calling the person about the call's name, then the person taking a call from them. A call's rooms are
         encrypted end to end with a key only this server gives out, to the people in the call. ``people(user, call)``
-        lists the user ids the call screen offers to add."""
-        self._call_rules.add(pattern, {"rule": _flexible(rule), "people": None if people is None else _flexible(people)})
+        lists the user ids the call screen offers to add.
+
+        ``support:{pair}`` is a call of the two people its name holds, ``support:34:42``, and nobody else, which the
+        page's ``support:{pair}`` names. It needs no rule, and a rule it has is asked only about those two. Being only
+        ever those two, it takes no ``people``."""
+        pair = has_pair(pattern)
+        if rule is None and not pair:
+            raise ValueError("wordplus-realtime: calls %r needs a rule" % (pattern,))
+        if pair and people is not None:
+            raise ValueError("wordplus-realtime: a call of `{pair}` is only ever those two; `people` needs a rule of your own, for %r" % (pattern,))
+        own = None if rule is None else _flexible(rule)
+        self._call_rules.add(pattern, {"rule": _pair_call_rule(own) if pair else own, "people": None if people is None else _flexible(people)})
         return self
 
     def group_calls(self, pattern: str, rule: Callable[..., Any], *, encrypt: bool = False) -> "Realtime":
         """Group calls the app owns, by pattern (``meeting:{id}``): ``rule(user, params, name)``; ``encrypt`` encrypts
         their rooms end to end."""
+        if has_pair(pattern):
+            raise ValueError("wordplus-realtime: `{pair}` is for rooms and calls of two people, not a group call: %r" % (pattern,))
         self._group_rules.add(pattern, {"rule": _flexible(rule), "encrypt": bool(encrypt)})
         return self
 
@@ -713,6 +1034,8 @@ class Realtime:
         "1080p"}``. ``user`` is None for a visitor who isn't signed in, who may only be a viewer. The stream's own
         settings: ``stage``, ``reactions``, ``people`` (``mods`` or ``all``) and ``chat`` (``offline`` open or closed,
         ``links``, ``fresh``), each a value or a function of the name's parts. A page asks with ``calls.stream(name)``."""
+        if has_pair(pattern):
+            raise ValueError("wordplus-realtime: `{pair}` is for rooms and calls of two people, not a live stream: %r" % (pattern,))
         settings = {"stage": stage, "reactions": reactions, "people": people, "chat": chat}
         self._stream_rules.add(pattern, {"rule": _flexible(rule), "settings": settings})
         return self
@@ -729,9 +1052,9 @@ class Realtime:
         """A webhook from the realtime server, opened: ``room.occupied``, ``room.vacated``, ``member.joined``,
         ``member.left``, ``user.online``, ``user.offline``, ``stream.live``, ``stream.ended`` (a live stream going live
         and ending, its name in ``stream``), what people used (``call.ended``, ``group.joined``, ``group.left``,
-        ``stream.joined``, ``stream.left``, with ``seconds`` once over), the name of a browser's event a room's rule
-        sends here (``webhook``), or
-        '*'."""
+        ``stream.joined``, ``stream.left``, with ``seconds`` once over), a host's or your server's act in a group call
+        (``call.moderated``: ``call``, ``act``, ``user``, ``by``, ``held``, a ban's ``minutes``, the ``rules``), the name
+        of a browser's event a room's rule sends here (``webhook``), or '*'."""
         self._handlers.setdefault(type, []).append(handler)
         return self
 
@@ -745,9 +1068,21 @@ class Realtime:
         """An emit to users, every connection they have open: ``realtime.to_user(42).emit("notice", data)``."""
         return Emitter(self).to_user(users)
 
+    def to_everyone(self) -> EveryoneEmitter:
+        """An emit to every page and app connected now, signed in or not, with no room to join:
+        ``realtime.to_everyone().emit("notice", data)``. A page hears it with ``rt.on("notice", ...)``. Anyone may be
+        connected, so it is never sealed: keep it to what anyone may read."""
+        return EveryoneEmitter(self)
+
     def in_room(self, room: str) -> RoomQueries:
-        """A room as the realtime server holds it: its members, count, history, and kicking a user out."""
+        """Deprecated: ``room(name)``."""
         return RoomQueries(self, room)
+
+    @property
+    def aio(self) -> "AsyncRealtime":
+        """All of this from async code, FastAPI's and Starlette's and Django's async views, each request on a worker thread,
+        so the event loop goes on serving others: ``await realtime.aio.room("chat:7").members()``."""
+        return AsyncRealtime(self)
 
     @property
     def online(self) -> OnlineQueries:
@@ -778,6 +1113,11 @@ class Realtime:
     def webhooks(self) -> WebhookQueries:
         """The last deliveries of the webhook, a batch not taken sent again, and a test event."""
         return WebhookQueries(self)
+
+    @property
+    def recordings(self) -> RecordingQueries:
+        """Recordings of the app's group calls and live streams, with their transcripts."""
+        return RecordingQueries(self)
 
     def list_calls(self) -> List[Dict[str, Any]]:
         """The group calls of the app going on now, from the media server."""
@@ -822,6 +1162,7 @@ class Realtime:
             entry = self._entry_for(room)
             if entry is None:
                 denied[room] = "no_rule"
+                self._warn_no_rule("room", room)
                 continue
             answer = self._answer_for(entry, room, user)
             options = dict(entry["options"])
@@ -845,7 +1186,10 @@ class Realtime:
 
         now = self._now()
         exp = now + _clamp(self._token_ttl, 60, MAX_TTL)
-        claims: Dict[str, Any] = {"iss": self.site, "aud": AUDIENCE, "iat": now, "exp": exp}
+        # `ms`, so a token signed right after someone was taken out of a room works, in the same second too. Only within
+        # `iat`, as a clock given to the constructor, or the second turning just now, may say another.
+        ms = int(time.time() * 1000)
+        claims: Dict[str, Any] = {"iss": self.site, "aud": AUDIENCE, "iat": now, "ms": ms if ms // 1000 == now else now * 1000, "exp": exp}
         if _known(user):
             claims["sub"] = str(user)
 
@@ -933,7 +1277,14 @@ class Realtime:
             return self._may_call(request["may"], me)
 
         if "moderate" in request:
-            return self._moderate_call(request["moderate"], request.get("act"), request.get("user"), me)
+            return self._moderate_call(request["moderate"], request.get("act"), request.get("user"), me, request.get("host"), request)
+
+        if "hand" in request:
+            # No ``user`` is one's own hand; a ``user``, None too, is a host lowering hands.
+            return self._hand_in_call(request["hand"], request.get("up"), "user" in request, request.get("user"), me, request.get("host"), request.get("member"))
+
+        if "record" in request:
+            return self._record_call(request.get("call"), request["record"], request.get("recording"), me, request.get("recorder"))
 
         kind = "audio" if request.get("type") == "audio" else "video"
 
@@ -942,6 +1293,8 @@ class Realtime:
             if not valid_room(room):
                 return {"denied": "bad_request"}
             found = self._group_rules.match(room)
+            if found is None:
+                self._warn_no_rule("group_calls", room)
             answer = None if found is None else self._call_answer(found["value"]["rule"](me, found["params"], room), me)
             if answer is None:
                 return {"denied": "forbidden"}
@@ -959,6 +1312,13 @@ class Realtime:
             # Encrypted end to end when its rule says so: everyone the rule lets in gets the room's key.
             if found["value"]["encrypt"]:  # type: ignore[index]
                 signed["media_key"] = self.keys.media("room|" + room)
+            # Who the call screen offers Record to, as _record_call asks the rule again.
+            if signed.get("token") and (answer["record"] if answer.get("record") is not None else answer.get("admin")):
+                # Held: RECORDING_AVAILABLE is false until WordPlus Cloud serves the recordings routes, so no screen offers Record.
+                signed["record"] = RECORDING_AVAILABLE
+            # The acts this package takes, which the call screen offers where the realtime server takes them too.
+            if signed.get("token"):
+                signed["acts"] = list(CALL_ACTS)
             return signed
 
         call, attempt, role, group = request.get("call"), request.get("id"), request.get("role"), request.get("group")
@@ -971,7 +1331,7 @@ class Realtime:
         if other is None or other == me:
             return {"denied": "bad_request"}
 
-        answer = self._ask_caller(me, call, other, role)
+        answer = self._ask_caller(me, call, other, role, self._proven_side(request, call, attempt, role, other, me))
         if answer is None:
             return {"denied": "forbidden"}
 
@@ -1007,6 +1367,193 @@ class Realtime:
             signed["ring"] = self._call_proof("rung", call, first, pair, other)
         return signed
 
+    def call_token(self, user: UserId, to: UserId, type: Optional[str] = "video", name: Optional[str] = None, info: Optional[Dict[str, Any]] = None, into: Optional[str] = None) -> str:
+        """A token that lets ``user`` call ``to``, for your own route to give their page: ``rt.startCall( token )``. Your app
+        decides who may call whom, so check whatever it needs first: this signs what it's asked to. The person called needs
+        no token of their own to answer, as this one's ring proves that your server said yes. It rings once, so make a new
+        one for each call.
+
+        ``type``, ``audio``, or ``video`` for anything else; ``name``, of your own for the call, which ``call.ended`` and the
+        other webhooks give back; ``info``, what the person called is told about the caller, your ``profile`` by default;
+        ``into``, to ring ``to`` into a call this user is in, the ``call.ref`` their page sent your route, and the call goes on
+        as a group call."""
+        me = _call_user(user)
+        other = _call_user(to)
+        if me is None or other is None or me == other:
+            raise ValueError("wordplus-realtime: call_token needs two different users, each an id of up to 64 characters with no space")
+
+        attempt = base64url(os.urandom(15))
+        about = self._default_info(me) if info is None else info
+        if into is not None:
+            return self._add_to_call_token(me, other, attempt, into, about)
+
+        call = name if name is not None else "call:" + attempt
+        if not valid_room(call):
+            raise ValueError("wordplus-realtime: %r is not a name a call can have" % (call,))
+
+        pair = (me, other)
+        kind = "audio" if type == "audio" else "video"
+        sealed = self._sealed_call_info({**(about or {}), "_ring": self._call_proof("rung", call, attempt, pair, other)})
+        signed = self._sign_calls({"aud": CALL_AUDIENCE, "call": call, "id": attempt, "sub": me, "role": "caller", "type": kind, "to": other, "info": sealed})
+
+        return base64url(dumps({
+            "token": signed["token"],
+            "exp": signed["exp"],
+            "call": call,
+            "id": attempt,
+            "to": other,
+            "type": kind,
+            "key": self.call_key(attempt, me, other),
+            "media_key": self.keys.media("call|%s|%s|%s|%s" % (call, attempt, _id_part(me), _id_part(other))),
+            "pair": [me, other],
+            "member": self._call_proof("member", call, attempt, pair, me),
+        }).encode("utf-8"))
+
+    def _add_to_call_token(self, me: UserId, other: UserId, attempt: str, into: str, info: Any) -> str:
+        """The token that rings ``other`` into the call ``into`` names, which this user must be in: only this server makes
+        that proof."""
+        not_in = "wordplus-realtime: call_token `into` must be the `call.ref` of a call this user is in"
+        try:
+            ref = json.loads(unbase64url(into) or b"null")
+        except ValueError:
+            raise ValueError(not_in) from None
+        pair = _pair_of(ref.get("pair")) if isinstance(ref, dict) else None
+        if pair is None or not valid_room(ref.get("name")) or not _valid_attempt(ref.get("id")) or not isinstance(ref.get("member"), str):
+            raise ValueError(not_in)
+        name, group, member = ref["name"], ref["id"], ref["member"]
+        if not hmac.compare_digest(self._call_proof("member", name, group, pair, me), member):
+            raise ValueError(not_in)
+
+        kind = "audio" if ref.get("type") == "audio" else "video"
+        signed = self._sign_calls({"aud": CALL_AUDIENCE, "call": name, "id": attempt, "sub": me, "role": "caller", "type": kind, "to": other, "group": group, "info": self._sealed_call_info(info)})
+        return base64url(dumps({
+            "token": signed["token"],
+            "exp": signed["exp"],
+            "call": name,
+            "id": attempt,
+            "to": other,
+            "type": kind,
+            "group": group,
+            "pair": [pair[0], pair[1]],
+            "member": member,
+            "ring": self._call_proof("rung", name, group, pair, other),
+        }).encode("utf-8"))
+
+    def group_call_token(
+        self,
+        user: UserId,
+        name: str,
+        type: Optional[str] = "video",
+        publish: bool = True,
+        subscribe: bool = True,
+        admin: bool = False,
+        hidden: bool = False,
+        record: Optional[bool] = None,
+        encrypt: bool = False,
+        info: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """A token that lets ``user`` into the group call ``name``, for your own route to give their page:
+        ``rt.joinGroupCall( token )``. Your app decides who joins and what they may do, so check whatever it needs first. A
+        call has no setup of its own: it starts as the first person joins, and the options say what this person may do in it.
+        Someone taken out of the call needs a new token to come back, so your route is asked again.
+
+        ``type``, ``audio``, or ``video`` for anything else; ``publish`` and ``subscribe``, yes by default; ``admin``, hosts the
+        call; ``hidden``, listed to nobody; ``record``, may record it, as its host may unless this says no; ``encrypt``, end to
+        end, with a key only your server gives out; ``info``, what the others are told about this user, your ``profile`` by
+        default."""
+        me = _call_user(user)
+        if me is None:
+            raise ValueError("wordplus-realtime: group_call_token needs a user, an id of up to 64 characters with no space")
+        if not valid_room(name):
+            raise ValueError("wordplus-realtime: %r is not a name a call can have" % (name,))
+
+        kind = "audio" if type == "audio" else "video"
+        about = self._default_info(me) if info is None else info
+        signed = self._sign_calls({
+            "aud": ROOM_AUDIENCE,
+            "room": name,
+            "sub": me,
+            "type": kind,
+            "info": self._sealed_call_info(about),
+            "publish": publish is not False,
+            "subscribe": subscribe is not False,
+            "admin": bool(admin),
+            "hidden": bool(hidden),
+        })
+
+        made: Dict[str, Any] = {"token": signed["token"], "exp": signed["exp"], "room": name, "type": kind, "user": me}
+        if encrypt:
+            made["media_key"] = self.keys.media("room|" + name)
+        # What the page shows for a host's acts and for recording, through the SDK's route: the call may outlast the token.
+        until = signed["exp"] + CALL_TTL
+        if admin:
+            made["host"] = {"until": until, "proof": self._group_proof("host", name, me, until)}
+        # Held with the answer's record flag: no recorder proof while recording is unavailable (see RECORDING_AVAILABLE).
+        if RECORDING_AVAILABLE and (admin if record is None else record):
+            made["recorder"] = {"until": until, "proof": self._group_proof("recorder", name, me, until)}
+        # Everyone's proof of being in the call, for raising a hand through the SDK's route, and the acts this package takes.
+        made["member"] = {"until": until, "proof": self._group_proof("member", name, me, until)}
+        made["acts"] = list(CALL_ACTS)
+        return base64url(dumps(made).encode("utf-8"))
+
+    def _group_proof(self, kind: str, name: str, user: UserId, until: int) -> str:
+        """A proof that a user hosts a group call, may record it, or is in it (``member``), until a time: only this server
+        makes one. Four parts, never the six of _call_proof()'s: neither a name nor an escaped user holds a ``|``."""
+        return self.keys.proof("%s|%s|%s|%d" % (kind, name, _id_part(user), until))
+
+    def _holds_group_proof(self, kind: str, name: str, user: UserId, held: Any) -> bool:
+        """Whether what a page holds is that proof, still in time."""
+        proof = held.get("proof") if isinstance(held, dict) else None
+        until = held.get("until") if isinstance(held, dict) else None
+        if not isinstance(proof, str) or isinstance(until, bool) or not isinstance(until, int) or until < self._now():
+            return False
+        return hmac.compare_digest(self._group_proof(kind, name, user, until), proof)
+
+    def stream_token(
+        self,
+        user: Optional[UserId],
+        name: str,
+        role: str = "viewer",
+        info: Optional[Dict[str, Any]] = None,
+        chat: Optional[str] = None,
+        mod: Optional[bool] = None,
+        src: Optional[List[str]] = None,
+        quality: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """A token that lets ``user`` into the live stream ``name``, for your own route to give their page:
+        ``rt.joinStream( getToken )``. ``user`` is None for a visitor who isn't signed in, who can only be a viewer. Your app
+        decides who is what, so check whatever it needs first. It lasts ten minutes, so the page asks your route again as it
+        runs out, and your route may then say no.
+
+        ``role``, ``viewer`` by default; ``info``, a name and an https picture, your ``profile`` by default; ``chat``, ``write``
+        or ``read``; ``mod``, moderates the chat; ``src``, what a host or guest may send; ``quality``, a cap on the picture they
+        send; ``settings``, the stream's own (``stage``, ``reactions``, ``people``, ``chat``), the same in every token for it."""
+        if not isinstance(name, str) or not _STREAM_NAME.match(name):
+            raise ValueError("wordplus-realtime: %r is not a name a stream can have" % (name,))
+        answer: Dict[str, Any] = {"role": role, "info": info, "chat": chat, "mod": mod, "src": src, "quality": quality}
+        given = settings or {}
+        signed = self._sign_stream(name, user, answer, {key: given.get(key) for key in ("stage", "reactions", "people", "chat")}, {})
+        if "token" not in signed:
+            raise ValueError("wordplus-realtime: stream_token: a visitor can only be a viewer, and a user is an id of up to 64 characters of letters, digits and _ . @ -")
+        return base64url(dumps({"token": signed["token"], "exp": signed["exp"], "name": name}).encode("utf-8"))
+
+    def _proven_side(self, request: Dict[str, Any], call: str, attempt: str, role: str, other: UserId, me: UserId) -> bool:
+        """Whether this side of a call holds what only this server makes, so it already said yes (``call_token()``): the
+        person rung, with the proof the ring brought, or either side, with its proof of being in the call, for a token that
+        ran out. Bringing someone new into a call is never proven: that is the app's to decide."""
+        ring = request.get("ring")
+        group = request.get("group")
+        if group is not None:
+            named = _pair_of(request.get("pair"))
+            return role == "callee" and isinstance(ring, str) and named is not None and hmac.compare_digest(self._call_proof("rung", call, group, named, me), ring)
+
+        pair = (me, other) if role == "caller" else (other, me)
+        member = request.get("member")
+        if isinstance(member, str) and hmac.compare_digest(self._call_proof("member", call, attempt, pair, me), member):
+            return True
+        return role == "callee" and isinstance(ring, str) and hmac.compare_digest(self._call_proof("rung", call, attempt, pair, me), ring)
+
     def call_key(self, attempt: str, caller: UserId, callee: UserId) -> str:
         """The key a call's two browsers seal their negotiation with: from the local key, which WordPlus Cloud doesn't know."""
         message = CALL_KEY_LABEL + "|" + attempt + "|" + _id_part(caller) + "|" + _id_part(callee)
@@ -1018,7 +1565,8 @@ class Realtime:
         if not isinstance(labels, list) or not labels:
             keys = self._user_entries(user)
             identity = self.identity(user) if keys else None
-            return {"keys": keys, "identity": identity} if identity else {"keys": keys}
+            # The app's key beside them, public as every page carries it: a browser has no environment to read it from.
+            return {"keys": keys, "identity": identity, "app": self.site} if identity else {"keys": keys, "app": self.site}
 
         out: List[str] = []
         seen: List[str] = []
@@ -1139,8 +1687,9 @@ class Realtime:
 
     def file_at(self, name: str) -> str:
         """Where the routes serve a browser file, in the folder of this version: ``realtime.js``, ``realtime-worker.js``,
-        ``realtime-rooms.min.js``, ``realtime-rooms-e2ee.worker.js``, ``realtime-ui.min.js`` or
-        ``realtime-ui-streams.min.js``. For a page with no bundler, ``realtime.js``:
+        ``realtime-rooms.min.js``, ``realtime-rooms-e2ee.worker.js``, ``realtime-ui.min.js``,
+        ``realtime-ui-streams.min.js``, ``realtime-ui-recording.min.js`` or ``hls.light.min.js``. For a page with no
+        bundler, ``realtime.js``:
         ``<script type="module">import { connect } from '…'</script>``."""
         return self._base + "/files/" + files_manifest()["version"] + "/" + name
 
@@ -1297,6 +1846,13 @@ class Realtime:
                 users.append(str(user))
         data = _pack(event.get("data"))
         extra = {"except": str(event["except"])} if event.get("except") else {}
+
+        if event.get("everyone"):
+            if rooms or users:
+                raise RealtimeError("bad_request")
+            self._signed("POST", "/wordplus/realtime/emit", {"everyone": True, "event": name, "data": data, **extra})
+            return {}
+
         sealing = event.get("seal", True) is not False and self._seal
         out: List[Dict[str, Any]] = []
         plain: List[str] = []
@@ -1390,9 +1946,28 @@ class Realtime:
             out["presence"] = True
         return out
 
-    def _ask_caller(self, user: UserId, name: str, with_user: UserId, role: str) -> Optional[Dict[str, Any]]:
+    def _ask_caller(self, user: UserId, name: str, with_user: UserId, role: str, proven: bool = False) -> Optional[Dict[str, Any]]:
         found = self._call_rules.match(name)
-        return None if found is None else self._call_answer(found["value"]["rule"](user, with_user, found["params"], name, {"role": role}), user)
+        if found is None:
+            if proven:
+                return self._call_answer(True, user)
+            self._warn_no_rule("calls", name)
+            return None
+        return self._call_answer(found["value"]["rule"](user, with_user, found["params"], name, {"role": role}), user)
+
+    def _warn_no_rule(self, kind: str, name: str) -> None:
+        """A name no rule owns, said once in the server's log with what to declare: the page hears only ``no_rule`` or
+        ``forbidden``, as a user refused does, and a developer who forgot the rule has nothing else to go on. The first
+        names of a kind are enough, however many a page makes up."""
+        said = kind + ":" + name
+        if said in self._warned_no_rule or len(self._warned_no_rule) >= 20:
+            return
+        self._warned_no_rule.add(said)
+        token = {"calls": "call_token(user, to)", "group_calls": "group_call_token(user, name)", "streams": "stream_token(user, name)"}.get(kind)
+        if token:
+            log.warning("wordplus-realtime: no rule matches %r, so it is refused. Start it with a token from your own route: realtime.%s.", name, token)
+            return
+        log.warning("wordplus-realtime: no rule matches %r, so it is refused. Declare it: realtime.%s(\"pattern:{id}\", rule).", name, kind)
 
     def _call_answer(self, answer: Any, user: UserId) -> Optional[Dict[str, Any]]:
         """A calls rule's answer, with the user's info by default; None for no."""
@@ -1407,26 +1982,133 @@ class Realtime:
         """A proof only this server makes about a call: ``member``, a user is in it; ``rung``, someone in it rang a user in."""
         return self.keys.proof("%s|%s|%s|%s|%s|%s" % (kind, call, first, _id_part(pair[0]), _id_part(pair[1]), _id_part(user)))
 
-    def _moderate_call(self, name: Any, act: Any, target: Any, me: UserId) -> Dict[str, Any]:
-        """What a host does to someone else in the group call ``name``, from its call screen: the call's rule asked again
-        for the user, who must be its host (``admin``), then the act through WordPlus Cloud: ``mute`` their microphone,
-        ``speak`` or ``listen`` (permit()'s ``publish``), ``remove``. ``{"done": …}``, whether it changed anything."""
-        user = _call_user(target)
-        if not valid_room(name) or act not in MODERATION_ACTS or user is None or user == me:
-            return {"denied": "bad_request"}
+    def _hosts_call(self, name: str, me: UserId, held: Any) -> bool:
+        """Whether ``me`` hosts the group call ``name``: a rule that owns the name decides, else the proof a token of this
+        server's own gave the page."""
         found = self._group_rules.match(name)
-        answer = None if found is None else found["value"]["rule"](me, found["params"], name)
-        if not isinstance(answer, dict) or not answer.get("admin"):
+        if found is None:
+            return self._holds_group_proof("host", name, me, held)
+        answer = found["value"]["rule"](me, found["params"], name)
+        return isinstance(answer, dict) and bool(answer.get("admin"))
+
+    def _moderate_call(self, name: Any, act: Any, target: Any, me: UserId, held: Any, request: Dict[str, Any]) -> Dict[str, Any]:
+        """What a host does in the group call ``name``, from its call screen: the call's rule asked again for the user, who
+        must be its host (``admin``), then the act through WordPlus Cloud, as the host acts of Better Messages are:
+
+        - ``mute`` turns their microphone off once, and they may turn it on again. ``hold_mic`` holds it off until the call
+          ends or ``release_mic``, through a reload too.
+        - ``speak`` and ``listen`` (permit()'s ``publish``) hold until the call ends, or the other one, or a mode switch.
+        - ``remove`` is a kick, which also keeps them out of a locked call. ``ban`` keeps them out for ``minutes`` (by
+          default until the call ends, at most a week), and ``unban`` lets them in again.
+        - ``rules`` sets the room's rules (``rules``: any of ``mode``, ``locked``, ``muted``), which hold until the call empties.
+        - ``ask`` asks them to turn on a camera or microphone (``devices``), and keeps nothing.
+        - ``end`` ends the call for everyone and lets go of everything it held but a ban given minutes.
+        - ``spotlight`` or ``unspotlight`` (spotlight()), which may name the host themselves, and ``unspotlight`` no one.
+
+        ``rules`` and ``end`` name no user (None). ``{"done": …}``, whether it changed anything (True for an act that always
+        takes), with an ask's ``id`` and the rules now. Each act names the host as ``by``, for the ``call.moderated`` webhook."""
+        spotlights = act in ("spotlight", "unspotlight")
+        unnamed = act in ("rules", "end")
+        everyone = act in ("unspotlight", "rules", "end") and target is None
+        user = None if everyone else _call_user(target)
+        if not valid_room(name) or act not in MODERATION_ACTS:
+            return {"denied": "bad_request"}
+        if (unnamed and target is not None) or (user is None and not everyone) or (user == me and not spotlights):
+            return {"denied": "bad_request"}
+
+        # What an act carries beside its user, checked before anyone is asked.
+        minutes = request.get("minutes")
+        if act == "ban" and minutes is not None and (isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= BAN_MOST_MINUTES):
+            return {"denied": "bad_request"}
+        devices = _asked_devices(request.get("devices")) if act == "ask" else None
+        rules = _rules_change(request.get("rules")) if act == "rules" else None
+        if (act == "ask" and devices is None) or (act == "rules" and rules is None):
+            return {"denied": "bad_request"}
+
+        if not self._hosts_call(name, me, held):
             return {"denied": "forbidden"}
         call = self.call(name)
         try:
+            if spotlights:
+                return {"done": call.spotlight(user, act == "spotlight")}
+            if act == "rules":
+                return {"done": True, "rules": call.rules(**rules, by=me)}  # type: ignore[arg-type]
+            if act == "end":
+                call.end(by=me)
+                return {"done": True}
+            if user is None:
+                return {"denied": "bad_request"}
             if act == "mute":
-                return {"done": call.mute(user, "microphone")}
+                return {"done": call.mute(user, "microphone", by=me)}
+            if act == "hold_mic":
+                call.mute(user, "microphone", hold=True, by=me)
+                return {"done": True}
+            if act == "release_mic":
+                call.unmute(user, by=me)
+                return {"done": True}
             if act == "remove":
-                return {"done": call.remove(user)}
-            return {"done": call.permit(user, publish=act == "speak")}
-        except RealtimeError:
-            return {"denied": "server"}
+                return {"done": call.remove(user, by=me)}
+            if act == "ban":
+                call.ban(user, minutes=minutes, by=me)
+                return {"done": True}
+            if act == "unban":
+                return {"done": call.unban(user, by=me)}
+            if act == "ask":
+                return {"done": True, "id": call.ask(user, devices or [], me)["id"]}
+            # The screen's Make Listener and its promotion hold, as in Better Messages.
+            return {"done": call.permit(user, publish=act == "speak", hold=True, by=me)}
+        except RealtimeError as e:
+            # What the host is to hear of, in the call screen's words: a fifth person in the spotlight, a host banned,
+            # an ask again within 30 s, someone no longer in the call.
+            return {"denied": e.code if e.code in _PASSED_ON else "server"}
+
+    def _hand_in_call(self, name: Any, up: Any, named: bool, target: Any, me: UserId, host: Any, member: Any) -> Dict[str, Any]:
+        """A hand in the group call ``name``, from its call screen: a user's own up or down (no ``user``), which anyone the
+        call's rule lets in may raise (or, with no rule, the ``member`` proof of a token of this server's own), or a host
+        lowering someone's hand (``user``), or everyone's (``user`` None). Hands are kept until lowered or their owner leaves."""
+        if not valid_room(name) or not isinstance(up, bool):
+            return {"denied": "bad_request"}
+        call = self.call(name)
+        try:
+            if not named:
+                found = self._group_rules.match(name)
+                if found is None:
+                    inside = self._holds_group_proof("member", name, me, member)
+                else:
+                    inside = self._call_answer(found["value"]["rule"](me, found["params"], name), me) is not None
+                return {"done": call.hand(me, up)} if inside else {"denied": "forbidden"}
+
+            # A host lowers another's hand, or everyone's.
+            user = None if target is None else _call_user(target)
+            if up or (target is not None and user is None):
+                return {"denied": "bad_request"}
+            if not self._hosts_call(name, me, host):
+                return {"denied": "forbidden"}
+            return {"done": call.lower_hands(by=me) > 0 if user is None else call.hand(user, False)}
+        except RealtimeError as e:
+            return {"denied": e.code if e.code in _PASSED_ON else "server"}
+
+    def _record_call(self, name: Any, action: Any, recording: Any, me: UserId, held: Any = None) -> Dict[str, Any]:
+        """Record or stop recording the group call ``name``, from its call screen's Host Controls (``{"call": …,
+        "record": "start"}``, ``{"call": …, "record": "stop", "recording": …}``): the call's rule asked again for the user,
+        who must be allowed ``record`` (its ``admin`` where it says nothing of it), then WordPlus Cloud. ``{"recording":
+        {"id", "state"}}``, or why not: ``no_credits``, ``not_included``, ``already_recording`` and the rest, as the server
+        refuses it."""
+        if not valid_room(name) or action not in ("start", "stop"):
+            return {"denied": "bad_request"}
+        if action == "stop" and (not isinstance(recording, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", recording)):
+            return {"denied": "bad_request"}
+        found = self._group_rules.match(name)
+        answer = None if found is None else found["value"]["rule"](me, found["params"], name)
+        records = self._holds_group_proof("recorder", name, me, held) if found is None else isinstance(answer, dict) and (answer["record"] if answer.get("record") is not None else answer.get("admin"))
+        if not records:
+            return {"denied": "forbidden"}
+        try:
+            if action == "stop":
+                return {"recording": {"id": recording, "state": self.recordings.stop(recording)}}
+            return {"recording": self.recordings.start(call=name, by=me)}
+        except RealtimeError as e:
+            return {"denied": e.code}
 
     def _may_call(self, asks: Any, me: UserId) -> Dict[str, Any]:
         """Whether a user may call each person asked about (``[{"call": …, "to": …}]``), in the order asked: the rule of
@@ -1505,16 +2187,20 @@ class Realtime:
             return {"denied": "bad_request"}
         found = self._stream_rules.match(name)
         if found is None:
+            self._warn_no_rule("streams", name)
             return {"denied": "forbidden"}
 
-        signed_in = _known(user)
-        answer = found["value"]["rule"](user if signed_in else None, found["params"], name)
+        answer = found["value"]["rule"](user if _known(user) else None, found["params"], name)
         if isinstance(answer, str):
             answer = {"role": answer}
         if not isinstance(answer, dict) or answer.get("role") not in ("host", "guest", "viewer"):
             return {"denied": "forbidden"}
 
-        sub = str(user) if signed_in else None
+        return self._sign_stream(name, user, answer, found["value"]["settings"], found["params"])
+
+    def _sign_stream(self, name: str, user: Optional[UserId], answer: Dict[str, Any], settings: Dict[str, Any], params: Dict[str, str]) -> Dict[str, Any]:
+        """A live stream's grant for this user, once a rule or the app's own route has said who they are in it."""
+        sub = str(user) if _known(user) else None
         if (answer["role"] != "viewer") if sub is None else not _STREAM_USER.match(sub):
             return {"denied": "no_user"}
 
@@ -1523,9 +2209,6 @@ class Realtime:
         avatar = info.get("avatar") if isinstance(info, dict) else None
         if not (isinstance(avatar, str) and len(avatar) <= 512 and avatar.startswith("https://")):
             avatar = None
-
-        params = found["params"]
-        settings = found["value"]["settings"]
 
         def setting(value: Any) -> Any:
             return value(params) if callable(value) else value
@@ -1540,7 +2223,7 @@ class Realtime:
             "src": answer.get("src"), "q": answer.get("quality"),
             "stage": setting(settings["stage"]), "offline": chat.get("offline"), "links": chat.get("links"),
             "fresh": chat.get("fresh"), "people": setting(settings["people"]), "reactions": setting(settings["reactions"]),
-            "iat": now, "exp": exp,
+            "iat": now, "ms": _ms_within(now), "exp": exp,
         }
         key = hmac.new(self._secret, GRANT_KEY_LABEL.encode("ascii"), hashlib.sha256).digest()
         return {"token": stream_grant(claims, key), "exp": exp}
@@ -1549,7 +2232,7 @@ class Realtime:
         now = self._now()
         exp = now + _clamp(self._call_token_ttl, 60, CALL_TTL)
         key = hmac.new(self._secret, CALLS_LABEL.encode("ascii"), hashlib.sha256).digest()
-        return {"token": _jwt({"iss": self.site, "iat": now, "exp": exp, **claims}, key), "exp": exp}
+        return {"token": _jwt({"iss": self.site, "iat": now, "ms": _ms_within(now), "exp": exp, **claims}, key), "exp": exp}
 
     def _sealed_call_info(self, info: Any) -> Any:
         """A call's or a group call's info, sealed with the day's key: everyone the app knows opens it."""
